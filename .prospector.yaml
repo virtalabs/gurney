@@ -1,0 +1,20 @@
+strictness: medium
+test-warnings: true
+doc-warnings: false
+max-line-length: 100
+autodetect: false
+
+ignore-paths:
+  - .build
+  - .venv
+  - scenarios
+  - scripts
+
+mccabe:
+  run: false
+
+pylint:
+  disable:
+    - unspecified-encoding      # Python 3.10+ defaults to UTF-8
+    - subprocess-run-check     # check= is set explicitly where required
+    - import-outside-toplevel  # Common in tests for lazy/conditional imports

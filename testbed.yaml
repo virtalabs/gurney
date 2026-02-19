@@ -1,0 +1,78 @@
+networks:
+  - name: clinical-vlan
+    cidr: 192.168.10.0/24
+
+nodes:
+  - name: postgres
+    kind: docker
+    image: postgres:16.6-alpine
+    network: clinical-vlan
+    ip: 192.168.10.2
+    environment:
+      POSTGRES_DB: blueflow
+      POSTGRES_USER: blueflow
+      POSTGRES_PASSWORD: testbed
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U blueflow"]
+      interval_s: 5
+      timeout_s: 3
+      retries: 5
+
+  - name: redis
+    kind: docker
+    image: redis:7.4-alpine
+    network: clinical-vlan
+    ip: 192.168.10.3
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval_s: 5
+      timeout_s: 3
+      retries: 5
+
+  - name: blueflow-api
+    kind: docker
+    image: ${BLUEFLOW_IMAGE:-blueflow:local}
+    network: clinical-vlan
+    ip: 192.168.10.4
+    ports: [8000]
+    depends_on: [postgres, redis]
+    environment:
+      DATABASE_URL: postgresql://blueflow:testbed@192.168.10.2:5432/blueflow
+      REDIS_URL: redis://192.168.10.3:6379/0
+      DJANGO_SETTINGS_MODULE: blueflow.settings.production
+      SECRET_KEY: testbed-only-not-for-production
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health/"]
+      interval_s: 5
+      timeout_s: 3
+      retries: 10
+
+  - name: celery-worker
+    kind: docker
+    image: ${BLUEFLOW_IMAGE:-blueflow:local}
+    network: clinical-vlan
+    ip: 192.168.10.5
+    depends_on: [postgres, redis, blueflow-api]
+    command: celery -A blueflow worker -l info
+    environment:
+      DATABASE_URL: postgresql://blueflow:testbed@192.168.10.2:5432/blueflow
+      REDIS_URL: redis://192.168.10.3:6379/0
+      DJANGO_SETTINGS_MODULE: blueflow.settings.production
+      SECRET_KEY: testbed-only-not-for-production
+
+  - name: tapirx
+    kind: docker
+    image: ${TAPIRX_IMAGE:-tapirx:local}
+    network: clinical-vlan
+    ip: 192.168.10.6
+    depends_on: [blueflow-api]
+    environment:
+      BLUEFLOW_API_URL: http://192.168.10.4:8000/api
+      LISTEN_INTERFACE: eth0
+
+  - name: pacs-server
+    kind: docker
+    image: orthancteam/orthanc:25.12.3
+    network: clinical-vlan
+    ip: 192.168.10.10
+    ports: [4242, 8042]

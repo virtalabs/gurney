@@ -1,0 +1,5 @@
+# Minimal scenario using only third-party images (postgres, redis, orthanc).
+# Use this to validate testbed infrastructure without BlueFlow/TapirX.
+name: smoke-minimal
+topology: testbed.yaml
+nodes: [postgres, redis, pacs-server]

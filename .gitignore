@@ -1,0 +1,26 @@
+# Environment variables
+.env
+
+# IDEs
+.cursor
+.vscode
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pyw
+*.pyz
+*.pywz
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Testbed build artifacts
+scenarios/*/.build/
