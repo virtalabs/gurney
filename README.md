@@ -34,6 +34,39 @@ Or use the `testbed` script after install: `testbed list`, `testbed run smoke-mi
 
 Scenarios live in `scenarios/<name>/` with a `scenario.yaml` that names the scenario, references a topology file (e.g. `testbed.yaml`), and optionally lists `nodes` for a subset run.
 
+## TapirX playbook
+
+The `tapirx-dicom-discovery` scenario runs **two TapirX instances**: one reads DICOM from a pcap file; the other listens on an interface and receives the same pcap replayed by a **tcpreplay** sidecar. Both POST discovered assets to the mock API. Useful TapirX flags:
+
+| Flag | Purpose |
+|------|---------|
+| `-pcap <path>` | Read from a pcap file instead of live capture |
+| `-apiurl <url>` | POST discovered assets to this URL (e.g. `/api/assets/upsert`) |
+| `-verbose` | Show verbose output |
+| `-limit <n>` | Exit after N packets (0 = unlimited) |
+| `-sequential` | Process packets sequentially |
+| `-iface <name>` | Interface for live capture (default `eth0`) |
+
+**Pcap example** (e.g. inside the tapirx container or with pcap mounted):
+
+```bash
+tapirx -pcap /pcap/DICOM_C-ECHO-echoscu.pcap -verbose -limit 100 -sequential
+```
+
+With API upload:
+
+```bash
+tapirx -pcap /pcap/DICOM_C-ECHO-echoscu.pcap -apiurl http://mock-asset-api:8000/api/assets/upsert -limit 100 -sequential
+```
+
+**Listener example** (live capture on an interface):
+
+```bash
+tapirx -iface eth0 -verbose -limit 500
+```
+
+To get a shell in the tapirx image: `docker run -it --rm --entrypoint /bin/sh tapirx:local`. To run with the scenario’s volumes and network: from `scenarios/tapirx-dicom-discovery/.build`, run `docker compose run --rm --no-deps --entrypoint /bin/sh tapirx-pcap` (or `tapirx-live`), then run `tapirx` with the flags above (pcap is at `/pcap`).
+
 ## Reproducible teardown validation
 
 To validate that scenario runs are deterministic and leave no orphaned resources:

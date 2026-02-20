@@ -1,0 +1,56 @@
+# OBJ-2 TapirX DICOM Discovery topology.
+# mock-asset-api + tapirx only; no BlueFlow.
+# Volumes: ../../../ is relative to scenario .build dir (-> project root).
+networks:
+  - name: clinical-vlan
+    cidr: 192.168.10.0/24
+
+nodes:
+  - name: mock-asset-api
+    kind: docker
+    image: ${MOCK_ASSET_API_IMAGE:-mock-asset-api:local}
+    network: clinical-vlan
+    ip: 192.168.10.4
+    # No ports: TapirX reaches mock-asset-api:8000 via internal network; avoids host port conflicts
+    volumes:
+      - "./output:/output"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"
+      interval_s: 2
+      timeout_s: 3
+      retries: 5
+
+  - name: tapirx-pcap
+    kind: docker
+    image: ${TAPIRX_IMAGE:-tapirx:local}
+    network: clinical-vlan
+    depends_on: [mock-asset-api]
+    volumes:
+      - "../../../replay/pcap:/pcap:ro"
+    command: -pcap /pcap/DICOM_C-ECHO-echoscu.pcap -apiurl http://mock-asset-api:8000/api/assets/upsert -limit 100 -sequential -verbose
+
+  - name: tapirx-live
+    kind: docker
+    image: ${TAPIRX_IMAGE:-tapirx:local}
+    network: clinical-vlan
+    depends_on: [mock-asset-api]
+    cap_add: [NET_ADMIN]
+    command: -iface eth0 -apiurl http://mock-asset-api:8000/api/assets/upsert -limit 200 -sequential -verbose
+    healthcheck:
+      test: ["CMD", "pgrep", "-x", "tapirx"]
+      interval_s: 2
+      timeout_s: 3
+      retries: 5
+
+  - name: replay
+    kind: docker
+    image: ${REPLAY_IMAGE:-replay:local}
+    network: clinical-vlan
+    depends_on: [tapirx-live]
+    volumes:
+      - "../../../replay/pcap:/pcap:ro"
+    command: -i eth0 /pcap/DICOM_C-ECHO-echoscu.pcap

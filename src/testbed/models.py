@@ -30,13 +30,14 @@ class NodeDef(BaseModel):
     kind: Literal["docker"]
     image: str
     network: str
-    ip: str
+    ip: str | None = None  # None = dynamic allocation (e.g. for compose run one-offs)
     ports: list[int] = []
     environment: dict[str, str] = {}
     command: str | None = None
     depends_on: list[str] = []
     healthcheck: HealthCheck | None = None
     volumes: list[str] = []
+    cap_add: list[str] = []
 
 
 def _validate_unique_node_names(nodes: list[NodeDef]) -> None:
@@ -91,6 +92,8 @@ def _validate_no_circular_deps(nodes: list[NodeDef]) -> None:
 def _validate_node_ip_in_cidr(
     node: NodeDef, network_by_name: dict[str, NetworkDef]
 ) -> None:
+    if node.ip is None:
+        return
     net_def = network_by_name[node.network]
     network = ipaddress.ip_network(net_def.cidr, strict=False)
     try:
@@ -104,7 +107,7 @@ def _validate_node_ip_in_cidr(
 
 
 def _validate_no_duplicate_ips(nodes: list[NodeDef]) -> None:
-    ips = [n.ip for n in nodes]
+    ips = [n.ip for n in nodes if n.ip is not None]
     if len(ips) != len(set(ips)):
         raise ValueError("Duplicate IP addresses found")
 
@@ -134,9 +137,33 @@ class TopologyConfig(BaseModel):
         return self
 
 
+class SpanConfig(BaseModel):
+    """One sender/listener pair: sender uses listener's network (network_mode)."""
+
+    sender: str
+    listener: str
+
+    @model_validator(mode="after")
+    def sender_not_listener(self) -> "SpanConfig":
+        if self.sender == self.listener:
+            raise ValueError("span sender and listener must differ")
+        return self
+
+
 class ScenarioConfig(BaseModel):
     """Scenario configuration from scenario.yaml."""
 
     name: str
     topology: str = "testbed.yaml"
     nodes: list[str] | None = None  # None = all nodes
+    run_once: list[str] | None = None  # Services to run as one-off after compose up
+    span: list[SpanConfig] | None = None  # Sender uses listener's network (port-span)
+
+    @model_validator(mode="after")
+    def span_unique_senders(self) -> "ScenarioConfig":
+        if not self.span:
+            return self
+        senders = [s.sender for s in self.span]
+        if len(senders) != len(set(senders)):
+            raise ValueError("span entries must have unique sender values")
+        return self

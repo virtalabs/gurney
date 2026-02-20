@@ -1,0 +1,9 @@
+# OBJ-2 TapirX DICOM Discovery Verification
+# Two TapirX: one reads pcap file, one listens on eth0 and receives replayed pcap via replay sidecar.
+name: tapirx-dicom-discovery
+topology: topology-tapirx-dicom.yaml
+nodes: [mock-asset-api, tapirx-live, replay]
+run_once: [replay]
+span:
+  - sender: replay
+    listener: tapirx-live

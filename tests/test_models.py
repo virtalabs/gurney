@@ -6,6 +6,7 @@ from testbed.models import (
     NetworkDef,
     NodeDef,
     ScenarioConfig,
+    SpanConfig,
     TopologyConfig,
 )
 
@@ -34,8 +35,20 @@ def test_topology_rejects_duplicate_ips() -> None:
         TopologyConfig(
             networks=[NetworkDef(name="net1", cidr="192.168.10.0/24")],
             nodes=[
-                NodeDef(name="a", kind="docker", image="x", network="net1", ip="192.168.10.2"),
-                NodeDef(name="b", kind="docker", image="x", network="net1", ip="192.168.10.2"),
+                NodeDef(
+                    name="a",
+                    kind="docker",
+                    image="x",
+                    network="net1",
+                    ip="192.168.10.2",
+                ),
+                NodeDef(
+                    name="b",
+                    kind="docker",
+                    image="x",
+                    network="net1",
+                    ip="192.168.10.2",
+                ),
             ],
         )
 
@@ -105,3 +118,67 @@ def test_scenario_config_defaults() -> None:
     s = ScenarioConfig(name="foo")
     assert s.topology == "testbed.yaml"
     assert s.nodes is None
+    assert s.run_once is None
+
+
+def test_scenario_config_run_once() -> None:
+    """ScenarioConfig accepts run_once."""
+    s = ScenarioConfig(name="bar", run_once=["tapirx"])
+    assert s.run_once == ["tapirx"]
+
+
+def test_scenario_config_span() -> None:
+    """ScenarioConfig accepts span as list of sender/listener pairs."""
+    s = ScenarioConfig(
+        name="bar",
+        span=[
+            {"sender": "replay", "listener": "tapirx-live"},
+        ],
+    )
+    assert s.span is not None
+    assert len(s.span) == 1
+    assert s.span[0].sender == "replay"
+    assert s.span[0].listener == "tapirx-live"
+
+
+def test_span_config_rejects_sender_equals_listener() -> None:
+    """SpanConfig rejects sender == listener."""
+    with pytest.raises(ValueError, match="sender and listener must differ"):
+        SpanConfig(sender="same", listener="same")
+
+
+def test_scenario_config_rejects_duplicate_span_senders() -> None:
+    """ScenarioConfig rejects duplicate senders in span."""
+    with pytest.raises(ValueError, match="unique sender"):
+        ScenarioConfig(
+            name="bar",
+            span=[
+                SpanConfig(sender="replay", listener="tapirx-live"),
+                SpanConfig(sender="replay", listener="other"),
+            ],
+        )
+
+
+def test_node_def_cap_add_default() -> None:
+    """NodeDef defaults cap_add to empty list."""
+    n = NodeDef(
+        name="srv",
+        kind="docker",
+        image="img",
+        network="net1",
+        ip="192.168.10.2",
+    )
+    assert n.cap_add == []
+
+
+def test_node_def_cap_add_parses() -> None:
+    """NodeDef with cap_add parses and preserves the list."""
+    n = NodeDef(
+        name="srv",
+        kind="docker",
+        image="img",
+        network="net1",
+        ip="192.168.10.2",
+        cap_add=["NET_ADMIN"],
+    )
+    assert n.cap_add == ["NET_ADMIN"]
