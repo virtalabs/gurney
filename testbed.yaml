@@ -29,9 +29,9 @@ nodes:
       timeout_s: 3
       retries: 5
 
-  - name: blueflow-api
+  - name: blueflow
     kind: docker
-    image: ${BLUEFLOW_IMAGE:-blueflow:local}
+    image: ${BLUEFLOW_IMAGE:-virtalabsinc/blueflow:testbed-3.0.0}
     network: clinical-vlan
     ip: 192.168.10.4
     ports: [8000]
@@ -39,25 +39,25 @@ nodes:
     environment:
       DATABASE_URL: postgresql://blueflow:testbed@192.168.10.2:5432/blueflow
       REDIS_URL: redis://192.168.10.3:6379/0
-      DJANGO_SETTINGS_MODULE: blueflow.settings.production
+      DJANGO_SETTINGS_MODULE: project.settings.development
       SECRET_KEY: testbed-only-not-for-production
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health/"]
+      test: ["CMD", "python", "-c", "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/').getcode() < 400 else 1)"]
       interval_s: 5
       timeout_s: 3
       retries: 10
 
   - name: celery-worker
     kind: docker
-    image: ${BLUEFLOW_IMAGE:-blueflow:local}
+    image: ${BLUEFLOW_IMAGE:-virtalabsinc/blueflow:testbed-3.0.0}
     network: clinical-vlan
     ip: 192.168.10.5
-    depends_on: [postgres, redis, blueflow-api]
-    command: celery -A blueflow worker -l info
+    depends_on: [postgres, redis, blueflow]
+    command: uv run celery -A bf_opencore worker -l info
     environment:
       DATABASE_URL: postgresql://blueflow:testbed@192.168.10.2:5432/blueflow
       REDIS_URL: redis://192.168.10.3:6379/0
-      DJANGO_SETTINGS_MODULE: blueflow.settings.production
+      DJANGO_SETTINGS_MODULE: project.settings.development
       SECRET_KEY: testbed-only-not-for-production
 
   - name: tapirx
@@ -65,10 +65,19 @@ nodes:
     image: ${TAPIRX_IMAGE:-tapirx:local}
     network: clinical-vlan
     ip: 192.168.10.6
-    depends_on: [blueflow-api]
+    depends_on: [blueflow]
     environment:
       BLUEFLOW_API_URL: http://192.168.10.4:8000/api
       LISTEN_INTERFACE: eth0
+
+  - name: replay
+    kind: docker
+    image: ${REPLAY_IMAGE:-replay:local}
+    network: clinical-vlan
+    ip: 192.168.10.7
+    depends_on: [tapirx]
+    volumes:
+      - "${PWD}/replay/pcap:/pcap:ro"
 
   - name: pacs-server
     kind: docker

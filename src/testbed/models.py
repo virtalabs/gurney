@@ -1,7 +1,7 @@
 """Pydantic models for topology and scenario configuration."""
 
 import ipaddress
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, model_validator
 
@@ -30,13 +30,14 @@ class NodeDef(BaseModel):
     kind: Literal["docker"]
     image: str
     network: str
-    ip: str
+    ip: str | None = None  # None = dynamic allocation (e.g. for compose run one-offs)
     ports: list[int] = []
     environment: dict[str, str] = {}
     command: str | None = None
     depends_on: list[str] = []
     healthcheck: HealthCheck | None = None
     volumes: list[str] = []
+    cap_add: list[str] = []
 
 
 def _validate_unique_node_names(nodes: list[NodeDef]) -> None:
@@ -91,6 +92,8 @@ def _validate_no_circular_deps(nodes: list[NodeDef]) -> None:
 def _validate_node_ip_in_cidr(
     node: NodeDef, network_by_name: dict[str, NetworkDef]
 ) -> None:
+    if node.ip is None:
+        return
     net_def = network_by_name[node.network]
     network = ipaddress.ip_network(net_def.cidr, strict=False)
     try:
@@ -104,7 +107,7 @@ def _validate_node_ip_in_cidr(
 
 
 def _validate_no_duplicate_ips(nodes: list[NodeDef]) -> None:
-    ips = [n.ip for n in nodes]
+    ips = [n.ip for n in nodes if n.ip is not None]
     if len(ips) != len(set(ips)):
         raise ValueError("Duplicate IP addresses found")
 
@@ -124,14 +127,159 @@ class TopologyConfig(BaseModel):
 
         _validate_unique_node_names(self.nodes)
         _validate_no_duplicate_ips(self.nodes)
-        _validate_no_circular_deps(self.nodes)
 
         for node in self.nodes:
             _validate_node_network_ref(node, network_names)
             _validate_node_depends_on(node, node_names)
             _validate_node_ip_in_cidr(node, network_by_name)
+        _validate_no_circular_deps(self.nodes)
 
         return self
+
+
+class FactDef(BaseModel):
+    """Global fact: name and value (scalar or map for env_from_fact)."""
+
+    name: str
+    value: str | dict[str, Any]
+
+
+class ArgvFactRef(BaseModel):
+    """Explicit fact reference in command argv: { fact: <fact-key> }."""
+
+    fact: str
+
+
+class ScenarioNodeDef(BaseModel):
+    """Scenario node: ordered build step with network attachment or span."""
+
+    id: str
+    build: Literal["up", "run"]
+    networks: list[str] | None = None
+    span: str | None = None  # listener node id; mutually exclusive with networks
+    env_from_fact: str | None = None
+
+    @model_validator(mode="after")
+    def span_xor_networks(self) -> "ScenarioNodeDef":
+        if self.span is not None and self.networks is not None:
+            raise ValueError("node must not define both span and networks")
+        return self
+
+
+class RetryConfig(BaseModel):
+    """Retry policy for a command."""
+
+    attempts: int = 1
+    delay_s: float = 0.0
+
+    @model_validator(mode="after")
+    def validate_bounds(self) -> "RetryConfig":
+        if self.attempts < 1:
+            raise ValueError("retry.attempts must be >= 1")
+        if self.delay_s < 0:
+            raise ValueError("retry.delay_s must be >= 0")
+        return self
+
+
+class CommandRunDef(BaseModel):
+    """Command run: argv with optional { fact: key } items."""
+
+    argv: list[str | ArgvFactRef]
+    detached: bool = False
+
+
+class CommandDef(BaseModel):
+    """Scenario command: bound to a node with retry policy."""
+
+    id: str
+    node: str
+    run: CommandRunDef
+    retry: RetryConfig
+
+
+def _validate_scenario_fact_names_unique(facts: list[FactDef]) -> None:
+    names = [f.name for f in facts]
+    if len(names) != len(set(names)):
+        raise ValueError("facts[].name must be unique")
+
+
+def _validate_scenario_node_ids_unique(nodes: list[ScenarioNodeDef]) -> None:
+    ids = [n.id for n in nodes]
+    if len(ids) != len(set(ids)):
+        raise ValueError("nodes[].id must be unique")
+
+
+def _validate_scenario_command_ids_unique(commands: list[CommandDef]) -> None:
+    ids = [c.id for c in commands]
+    if len(ids) != len(set(ids)):
+        raise ValueError("commands[].id must be unique")
+
+
+def _validate_commands_reference_nodes(
+    commands: list[CommandDef], node_ids: set[str]
+) -> None:
+    for c in commands:
+        if c.node not in node_ids:
+            raise ValueError(
+                f"commands[].node must reference a declared node id: {c.node!r}"
+            )
+
+
+def _collect_fact_refs_from_argv(argv: list[str | ArgvFactRef]) -> set[str]:
+    refs: set[str] = set()
+    for item in argv:
+        if isinstance(item, ArgvFactRef):
+            refs.add(item.fact)
+    return refs
+
+
+def _validate_fact_refs_resolve(
+    commands: list[CommandDef], fact_names: set[str]
+) -> None:
+    for c in commands:
+        refs = _collect_fact_refs_from_argv(c.run.argv)
+        missing = refs - fact_names
+        if missing:
+            raise ValueError(
+                f"command {c.id!r} references unknown fact(s): {sorted(missing)}"
+            )
+
+
+def _validate_env_from_fact_resolves_to_map(
+    nodes: list[ScenarioNodeDef], facts_by_name: dict[str, FactDef]
+) -> None:
+    for n in nodes:
+        if n.env_from_fact is None:
+            continue
+        if n.env_from_fact not in facts_by_name:
+            raise ValueError(
+                f"node {n.id!r} env_from_fact {n.env_from_fact!r} must reference a declared fact"
+            )
+        fact = facts_by_name[n.env_from_fact]
+        if not isinstance(fact.value, dict):
+            raise ValueError(
+                f"node {n.id!r} env_from_fact {n.env_from_fact!r} must reference a fact with map value"
+            )
+
+
+def resolve_argv(
+    argv: list[str | ArgvFactRef], facts_by_name: dict[str, FactDef]
+) -> list[str]:
+    """Resolve argv: substitute each ArgvFactRef with the fact's value (must be scalar)."""
+    result: list[str] = []
+    for item in argv:
+        if isinstance(item, str):
+            result.append(item)
+        else:
+            if item.fact not in facts_by_name:
+                raise ValueError(f"unknown fact in argv: {item.fact!r}")
+            val = facts_by_name[item.fact].value
+            if isinstance(val, dict):
+                raise ValueError(
+                    f"fact {item.fact!r} used in argv must have scalar value"
+                )
+            result.append(str(val))
+    return result
 
 
 class ScenarioConfig(BaseModel):
@@ -139,4 +287,19 @@ class ScenarioConfig(BaseModel):
 
     name: str
     topology: str = "testbed.yaml"
-    nodes: list[str] | None = None  # None = all nodes
+    facts: list[FactDef] = []
+    nodes: list[ScenarioNodeDef]
+    commands: list[CommandDef] = []
+
+    @model_validator(mode="after")
+    def validate_scenario(self) -> "ScenarioConfig":
+        _validate_scenario_fact_names_unique(self.facts)
+        _validate_scenario_node_ids_unique(self.nodes)
+        _validate_scenario_command_ids_unique(self.commands)
+        node_ids = {n.id for n in self.nodes}
+        _validate_commands_reference_nodes(self.commands, node_ids)
+        fact_names = {f.name for f in self.facts}
+        _validate_fact_refs_resolve(self.commands, fact_names)
+        facts_by_name = {f.name: f for f in self.facts}
+        _validate_env_from_fact_resolves_to_map(self.nodes, facts_by_name)
+        return self

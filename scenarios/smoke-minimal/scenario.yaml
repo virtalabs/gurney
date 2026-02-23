@@ -2,4 +2,18 @@
 # Use this to validate testbed infrastructure without BlueFlow/TapirX.
 name: smoke-minimal
 topology: testbed.yaml
-nodes: [postgres, redis, pacs-server]
+
+facts: []
+
+nodes:
+  - id: postgres
+    build: up
+    networks: [clinical-vlan]
+  - id: redis
+    build: up
+    networks: [clinical-vlan]
+  - id: pacs-server
+    build: up
+    networks: [clinical-vlan]
+
+commands: []
