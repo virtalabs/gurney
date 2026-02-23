@@ -1,4 +1,4 @@
-.PHONY: install pull test clean lock complexity lint
+.PHONY: install pull test clean lock complexity lint yamllint
 
 install: lock
 	uv sync --all-extras
@@ -20,6 +20,9 @@ complexity:
 
 lint:
 	uv run prospector .
+
+yamllint:
+	uv run yamllint testbed.yaml $$(find scenarios -name 'scenario.yaml' -not -path '*/.build/*')
 
 clean:
 	rm -rf build/ dist/ *.egg-info .pytest_cache

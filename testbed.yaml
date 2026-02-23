@@ -1,3 +1,4 @@
+---
 networks:
   - name: clinical-vlan
     cidr: 192.168.10.0/24
@@ -49,7 +50,7 @@ nodes:
 
   - name: celery-worker
     kind: docker
-    image: ${BLUEFLOW_IMAGE:-virtalabsinc/blueflow:testbed-3.0.0}
+    image: ${BLUEFLOW_IMAGE:-virtalabsinc/blueflow:testbed-3.0.1}
     network: clinical-vlan
     ip: 192.168.10.5
     depends_on: [postgres, redis, blueflow]
