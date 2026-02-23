@@ -140,3 +140,129 @@ def test_run_failure_default_output_structure() -> None:
     assert "  cmd replay-dicom" in result.stdout
     assert "FAIL tapirx-dicom-discovery" in result.stderr
     assert "Command 'replay-dicom' failed" in result.stderr
+
+
+def test_run_ui_classic_explicit_same_as_default() -> None:
+    """--ui classic produces the same structure as default (no --ui)."""
+    root = Path(__file__).resolve().parent.parent
+    if not (root / "scenarios" / "smoke-minimal").exists():
+        pytest.skip("smoke-minimal scenario not found")
+    with patch("testbed.cli.run_scenario") as m:
+        m.return_value = RunResult(
+            scenario="smoke-minimal",
+            passed=True,
+            duration_s=1.0,
+            up_node_ids=["api"],
+            command_outputs=[],
+        )
+        result = runner.invoke(app, ["run", "smoke-minimal", "--ui", "classic"])
+    assert result.exit_code == 0
+    assert "  up api" in result.stdout
+    assert "PASS smoke-minimal (1.0s)" in result.stdout
+
+
+def test_run_default_json_command_output_prettified() -> None:
+    """Default output shows prettified JSON for command stdout that is JSON."""
+    root = Path(__file__).resolve().parent.parent
+    if not (root / "scenarios" / "smoke-minimal").exists():
+        pytest.skip("smoke-minimal scenario not found")
+    with patch("testbed.cli.run_scenario") as m:
+        m.return_value = RunResult(
+            scenario="smoke-minimal",
+            passed=True,
+            duration_s=1.0,
+            up_node_ids=[],
+            command_outputs=[
+                ("get-assets", ["curl", "-s", "http://api/assets"], '{"assets":[{"id":1}]}\n', ""),
+            ],
+        )
+        result = runner.invoke(app, ["run", "smoke-minimal"])
+    assert result.exit_code == 0
+    assert "  cmd get-assets" in result.stdout
+    assert "assets" in result.stdout and "id" in result.stdout
+    assert "\n" in result.stdout  # prettified JSON has newlines
+
+
+def test_run_verbose_json_command_output_expanded() -> None:
+    """Verbose output pretty-prints JSON command stdout."""
+    root = Path(__file__).resolve().parent.parent
+    if not (root / "scenarios" / "smoke-minimal").exists():
+        pytest.skip("smoke-minimal scenario not found")
+    with patch("testbed.cli.run_scenario") as m:
+        m.return_value = RunResult(
+            scenario="smoke-minimal",
+            passed=True,
+            duration_s=1.0,
+            compose_up_stdout="",
+            compose_up_stderr="",
+            command_outputs=[
+                ("get-assets", ["curl", "http://api/assets"], '{"assets":[{"id":1}]}\n', ""),
+            ],
+            output_files=None,
+        )
+        result = runner.invoke(app, ["run", "smoke-minimal", "--verbose"])
+    assert result.exit_code == 0
+    assert "------ Command get-assets ------" in result.stdout
+    # Pretty-printed JSON has newlines/indent
+    assert "assets" in result.stdout and ("[" in result.stdout or '"id"' in result.stdout)
+
+
+def test_run_no_color_omits_ansi_in_pass_line() -> None:
+    """With --no-color, PASS line does not contain ANSI escape codes."""
+    root = Path(__file__).resolve().parent.parent
+    if not (root / "scenarios" / "smoke-minimal").exists():
+        pytest.skip("smoke-minimal scenario not found")
+    with patch("testbed.cli.run_scenario") as m:
+        m.return_value = RunResult(
+            scenario="smoke-minimal",
+            passed=True,
+            duration_s=1.0,
+            up_node_ids=[],
+            command_outputs=[],
+        )
+        result = runner.invoke(app, ["run", "smoke-minimal", "--no-color"])
+    assert result.exit_code == 0
+    assert "PASS smoke-minimal (1.0s)" in result.stdout
+    assert "\033[" not in result.stdout
+
+
+def test_run_default_command_line_has_dollar_prompt() -> None:
+    """Default output shows '$ argv' so JSON panel can be nested under it."""
+    root = Path(__file__).resolve().parent.parent
+    if not (root / "scenarios" / "smoke-minimal").exists():
+        pytest.skip("smoke-minimal scenario not found")
+    with patch("testbed.cli.run_scenario") as m:
+        m.return_value = RunResult(
+            scenario="smoke-minimal",
+            passed=True,
+            duration_s=1.0,
+            up_node_ids=[],
+            command_outputs=[
+                ("check", ["http_check", "http://api/health"], "ok", ""),
+            ],
+        )
+        result = runner.invoke(app, ["run", "smoke-minimal"])
+    assert result.exit_code == 0
+    assert "     $ http_check http://api/health" in result.stdout
+    assert "  cmd check" in result.stdout
+
+
+def test_run_no_color_json_plain_text_no_ansi() -> None:
+    """With --no-color, JSON command output is plain prettified text with no ANSI."""
+    root = Path(__file__).resolve().parent.parent
+    if not (root / "scenarios" / "smoke-minimal").exists():
+        pytest.skip("smoke-minimal scenario not found")
+    with patch("testbed.cli.run_scenario") as m:
+        m.return_value = RunResult(
+            scenario="smoke-minimal",
+            passed=True,
+            duration_s=1.0,
+            up_node_ids=[],
+            command_outputs=[
+                ("get", ["curl", "http://api/"], '{"status":"ok"}\n', ""),
+            ],
+        )
+        result = runner.invoke(app, ["run", "smoke-minimal", "--no-color"])
+    assert result.exit_code == 0
+    assert "status" in result.stdout and "ok" in result.stdout
+    assert "\033[" not in result.stdout

@@ -23,6 +23,7 @@ from testbed.models import (
     TopologyConfig,
 )
 from testbed.runner import (
+    RunEvent,
     RunResult,
     _filter_topology,
     _run_compose_and_capture,
@@ -420,6 +421,52 @@ def test_load_topology() -> None:
     top = load_topology("testbed.yaml", base_dir=root)
     assert len(top.networks) >= 1
     assert len(top.nodes) >= 1
+
+
+@pytest.mark.skipif(
+    not (Path.cwd() / "scenarios" / "smoke-minimal").exists(),
+    reason="smoke-minimal scenario required",
+)
+def test_run_scenario_emits_events_to_handler() -> None:
+    """When event_handler is provided, run_scenario emits compose_up_started, service_up, etc."""
+    root = Path.cwd()
+    scenario_dir = root / "scenarios" / "smoke-minimal"
+    events: list[RunEvent] = []
+
+    def collect(e: RunEvent) -> None:
+        events.append(e)
+
+    def fake_compose_up(path: Path, verbose: bool = False, services: list | None = None, **kwargs: object):
+        return ("", "")
+
+    def fake_compose_run(path: Path, service: str, **kwargs: object):
+        return ("", "")
+
+    def fake_compose_logs(path: Path, services: list[str]):
+        return [(s, "") for s in services]
+
+    def fake_compose_down(path: Path) -> None:
+        pass
+
+    with (
+        patch("testbed.runner.compose_up", side_effect=fake_compose_up),
+        patch("testbed.runner.compose_run", side_effect=fake_compose_run),
+        patch("testbed.runner.compose_logs", side_effect=fake_compose_logs),
+        patch("testbed.runner.compose_down", side_effect=fake_compose_down),
+    ):
+        result = run_scenario(
+            scenario_dir,
+            project_root=root,
+            keep=True,
+            event_handler=collect,
+        )
+    assert result.passed
+    kinds = [e.kind for e in events]
+    assert "compose_up_started" in kinds
+    assert kinds.count("service_up") >= 1
+    # smoke-minimal has postgres, redis, pacs-server as up nodes
+    service_ups = [e.get("node_id") for e in events if e.kind == "service_up"]
+    assert "postgres" in service_ups or len(service_ups) >= 1
 
 
 @pytest.mark.slow

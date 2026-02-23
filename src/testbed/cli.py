@@ -4,13 +4,29 @@ import logging
 from pathlib import Path
 
 import typer
+from rich.console import Console
+from rich.padding import Padding
+from rich.panel import Panel
+from rich.syntax import Syntax
 
 from testbed.compose import force_cleanup
+from testbed.console import UIMode, should_use_color, use_live_ui
+from testbed.format_output import (
+    format_command_output,
+    format_command_output_one_line,
+    parse_command_output_as_json,
+)
+from testbed.live_ui import run_with_live_ui
 from testbed.runner import run_scenario, RunResult
 from testbed.utility import ensure_log_dir, logger
 
 VAR_LOG = Path("var") / "log"
 DEFAULT_OUTPUT_MAX_LINE = 120
+
+# ANSI codes (only used when use_color is True)
+ANSI_RESET = "\033[0m"
+ANSI_GREEN = "\033[32m"
+ANSI_RED = "\033[31m"
 
 
 def _configure_logging() -> None:
@@ -18,7 +34,9 @@ def _configure_logging() -> None:
     log_dir = ensure_log_dir(Path.cwd() / VAR_LOG)
     log_file = log_dir / "testbed.log"
     handler = logging.FileHandler(log_file, encoding="utf-8")
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+    )
     testbed_logger = logging.getLogger("testbed")
     testbed_logger.setLevel(logging.DEBUG)
     if not testbed_logger.handlers:
@@ -34,7 +52,26 @@ def _one_line_summary(
         line = (stderr or "").strip().split("\n")[0] if (stderr or "").strip() else ""
     if not line:
         return "(no output)"
-    return (line[: max_len] + "...") if len(line) > max_len else line
+    return (line[:max_len] + "...") if len(line) > max_len else line
+
+
+def _print_command_output(
+    stdout: str,
+    stderr: str,
+    use_color: bool,
+    indent: int = 5,
+    verbose: bool = False,
+) -> None:
+    """Print command output: green syntax-highlighted JSON panel when use_color and valid JSON, else plain text."""
+    is_json, formatted = parse_command_output_as_json(stdout, stderr)
+    if use_color and is_json:
+        syntax = Syntax(formatted, "json", theme="monokai", indent_guides=True)
+        panel = Panel(syntax, border_style="green", padding=(0, 1), expand=False)
+        Console().print(Padding(panel, (0, 0, 0, indent)))
+    elif verbose and not is_json:
+        typer.echo(format_command_output(stdout, stderr, verbose=True))
+    else:
+        typer.echo(f"     {formatted}" if indent else formatted)
 
 
 def _echo_compose_section(result: RunResult) -> None:
@@ -47,7 +84,9 @@ def _echo_compose_section(result: RunResult) -> None:
     typer.echo("")
 
 
-def _echo_container_and_command_sections(result: RunResult) -> None:
+def _echo_container_and_command_sections(
+    result: RunResult, use_color: bool = False
+) -> None:
     """Print container logs and command outputs (verbose: 4-tuple id, _argv, stdout, _stderr)."""
     if result.compose_up_service_logs:
         for service, logs in result.compose_up_service_logs:
@@ -55,10 +94,12 @@ def _echo_container_and_command_sections(result: RunResult) -> None:
             typer.echo(logs.rstrip() if logs else "(no output captured)")
             typer.echo("")
     if result.command_outputs:
-        for command_id, _argv, stdout, _stderr in result.command_outputs:
+        for command_id, _argv, stdout, stderr in result.command_outputs:
             typer.echo(f"------ Command {command_id} ------")
-            if stdout:
-                typer.echo(stdout.rstrip())
+            if stdout or stderr:
+                _print_command_output(
+                    stdout or "", stderr or "", use_color, indent=5, verbose=True
+                )
             typer.echo("")
 
 
@@ -73,7 +114,10 @@ def _echo_scenario_output_section(result: RunResult) -> None:
         typer.echo("")
 
 
-def _echo_default_output(result: RunResult) -> None:
+def _echo_default_output(
+    result: RunResult,
+    use_color: bool = False,
+) -> None:
     """Print default (non-verbose) output: up lines, cmd blocks, then PASS or FAIL."""
     up_ids = result.up_node_ids or []
     for node_id in up_ids:
@@ -84,21 +128,24 @@ def _echo_default_output(result: RunResult) -> None:
     for command_id, resolved_argv, stdout, stderr in outputs:
         typer.echo(f"  cmd {command_id}")
         argv_line = " ".join(resolved_argv) if resolved_argv else ""
-        typer.echo(f"     {argv_line}")
-        typer.echo(f"     {_one_line_summary(stdout, stderr)}")
+        typer.echo(f"     $ {argv_line}")
+        _print_command_output(stdout or "", stderr or "", use_color, indent=5, verbose=False)
         typer.echo("")
     if result.passed:
-        typer.echo(f"PASS {result.scenario} ({result.duration_s:.1f}s)")
+        line = f"PASS {result.scenario} ({result.duration_s:.1f}s)"
+        typer.echo(f"{ANSI_GREEN}{line}{ANSI_RESET}" if use_color else line)
     else:
-        typer.echo(f"FAIL {result.scenario} ({result.duration_s:.1f}s)", err=True)
+        line = f"FAIL {result.scenario} ({result.duration_s:.1f}s)"
+        out = f"{ANSI_RED}{line}{ANSI_RESET}" if use_color else line
+        typer.echo(out, err=True)
         if result.error:
             typer.echo(result.error, err=True)
 
 
-def _echo_verbose_layers(result: RunResult) -> None:
+def _echo_verbose_layers(result: RunResult, use_color: bool = False) -> None:
     """Print structured verbose output: Docker Compose up, container(s), scenario output, Testbed."""
     _echo_compose_section(result)
-    _echo_container_and_command_sections(result)
+    _echo_container_and_command_sections(result, use_color=use_color)
     _echo_scenario_output_section(result)
     typer.echo("------ Testbed ------")
     typer.echo(f"PASS {result.scenario} ({result.duration_s:.1f}s)")
@@ -127,6 +174,16 @@ def run(
         "-v",
         help="Show Docker and container output after a successful run",
     ),
+    ui: UIMode = typer.Option(
+        "live",
+        "--ui",
+        help="Output style: live (banner, progress, streamed) or classic (plain).",
+    ),
+    no_color: bool = typer.Option(
+        False,
+        "--no-color",
+        help="Disable colored output (also respects NO_COLOR env).",
+    ),
 ) -> None:
     """Run a scenario: topology up, health checks, teardown."""
     project_root = Path.cwd()
@@ -138,27 +195,48 @@ def run(
         logger.error("Scenario not found: %s", scenario_dir)
         raise typer.Exit(1)
 
+    use_color = should_use_color(no_color)
     logger.info("Running scenario %s", scenario)
-    result = run_scenario(
-        scenario_dir,
-        keep=keep,
-        verbose=verbose,
-        project_root=project_root,
-    )
-
-    if verbose and result.passed and (
-        result.compose_up_stdout is not None
-        or result.compose_up_service_logs
-        or result.command_outputs
-        or result.output_files
-    ):
-        _echo_verbose_layers(result)
+    if use_live_ui(ui):
+        result = run_with_live_ui(
+            scenario_dir,
+            keep=keep,
+            verbose=verbose,
+            project_root=project_root,
+            use_color=use_color,
+        )
     else:
-        _echo_default_output(result)
+        result = run_scenario(
+            scenario_dir,
+            keep=keep,
+            verbose=verbose,
+            project_root=project_root,
+        )
+
+    if use_live_ui(ui):
+        pass  # live UI already printed output
+    elif (
+        verbose
+        and result.passed
+        and (
+            result.compose_up_stdout is not None
+            or result.compose_up_service_logs
+            or result.command_outputs
+            or result.output_files
+        )
+    ):
+        _echo_verbose_layers(result, use_color=use_color)
+    else:
+        _echo_default_output(result, use_color=use_color)
     if result.passed:
         logger.info("PASS %s (%.1fs)", result.scenario, result.duration_s)
     else:
-        logger.error("FAIL %s (%.1fs): %s", result.scenario, result.duration_s, result.error or "")
+        logger.error(
+            "FAIL %s (%.1fs): %s",
+            result.scenario,
+            result.duration_s,
+            result.error or "",
+        )
     if not result.passed:
         raise typer.Exit(1)
 

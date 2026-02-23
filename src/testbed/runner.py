@@ -2,8 +2,9 @@
 
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, Callable
 
 import yaml
 
@@ -30,6 +31,20 @@ OUTPUT_READABLE_SUFFIXES = (".txt", ".json", ".jsonl", ".yaml", ".yml", ".log")
 
 # (command_id, resolved_argv, stdout, stderr)
 CommandOutputItem = tuple[str, list[str], str, str]
+
+
+@dataclass(frozen=True)
+class RunEvent:
+    """Lightweight event emitted during a scenario run for live UI or logging."""
+
+    kind: str
+    payload: dict[str, Any] = field(default_factory=dict)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self.payload.get(key, default)
+
+
+EventHandler = Callable[[RunEvent], None]
 
 
 @dataclass
@@ -110,6 +125,12 @@ def _facts_by_name(scenario: ScenarioConfig) -> dict:
     return {f.name: f for f in scenario.facts}
 
 
+def _emit(handler: EventHandler | None, kind: str, **payload: Any) -> None:
+    """Emit a run event if handler is set."""
+    if handler is not None:
+        handler(RunEvent(kind=kind, payload=dict(payload)))
+
+
 def _run_command_with_retry(
     compose_path: Path,
     command_id: str,
@@ -121,9 +142,11 @@ def _run_command_with_retry(
     command_argv: list[str] | None = None,
     use_exec: bool = False,
     detached: bool = False,
+    event_handler: EventHandler | None = None,
 ) -> tuple[bool, str, str, str | None]:
     """Run a service with retry policy. Returns (success, stdout, stderr, error_msg)."""
     last_out, last_err = "", ""
+    _emit(event_handler, "command_started", command_id=command_id, argv=command_argv or [])
     for attempt in range(retry_attempts):
         if attempt > 0:
             time.sleep(retry_delay_s)
@@ -143,6 +166,15 @@ def _run_command_with_retry(
                     no_deps=no_deps,
                     command=command_argv,
                 )
+            _emit(
+                event_handler,
+                "command_ended",
+                command_id=command_id,
+                argv=command_argv or [],
+                success=True,
+                stdout=last_out,
+                stderr=last_err,
+            )
             return (True, last_out, last_err, None)
         except RuntimeError as exc:
             if attempt == retry_attempts - 1:
@@ -152,12 +184,31 @@ def _run_command_with_retry(
                     retry_attempts,
                     exc,
                 )
+                _emit(
+                    event_handler,
+                    "command_ended",
+                    command_id=command_id,
+                    argv=command_argv or [],
+                    success=False,
+                    stdout=last_out,
+                    stderr=last_err,
+                    error=str(exc),
+                )
                 return (
                     False,
                     last_out,
                     last_err,
                     f"Command {command_id!r} failed after {retry_attempts} attempt(s): {exc}",
                 )
+    _emit(
+        event_handler,
+        "command_ended",
+        command_id=command_id,
+        argv=command_argv or [],
+        success=True,
+        stdout=last_out,
+        stderr=last_err,
+    )
     return (True, last_out, last_err, None)
 
 
@@ -168,9 +219,13 @@ def _run_check_service(
     verbose: bool,
     retry_attempts: int = 1,
     retry_delay_s: float = 0.0,
+    event_handler: EventHandler | None = None,
+    command_id: str | None = None,
 ) -> tuple[bool, str, str, str | None]:
     """Run a check-N service and validate 2xx. Returns (success, stdout, stderr, error_msg)."""
     last_out, last_err = "", ""
+    cid = command_id or check_name
+    _emit(event_handler, "check_started", command_id=cid, url=url)
     for attempt in range(retry_attempts):
         if attempt > 0:
             time.sleep(retry_delay_s)
@@ -182,12 +237,14 @@ def _run_check_service(
         except RuntimeError as exc:
             if attempt == retry_attempts - 1:
                 logger.error("Check %s failed: %s", url, exc)
+                _emit(event_handler, "check_failed", command_id=cid, url=url, error=str(exc))
                 return (False, last_out, last_err, str(exc))
             continue
         lines = (out or "").strip().split("\n")
         code_str = lines[-1].strip() if lines else ""
         code = int(code_str) if code_str.isdigit() else 0
         if 200 <= code < 300:
+            _emit(event_handler, "check_passed", command_id=cid, url=url, status_code=code)
             return (True, out, err, None)
         body_preview = ""
         if len(lines) > 1:
@@ -196,9 +253,11 @@ def _run_check_service(
         if attempt == retry_attempts - 1:
             msg = f"Check failed: {url!r} returned HTTP {code_str}{body_preview}"
             logger.error("%s", msg)
+            _emit(event_handler, "check_failed", command_id=cid, url=url, error=msg)
             return (False, out, err, msg)
     err_msg = f"Check failed: {url!r} returned no valid HTTP status"
     logger.error("%s", err_msg)
+    _emit(event_handler, "check_failed", command_id=cid, url=url, error=err_msg)
     return (False, last_out, last_err, err_msg)
 
 
@@ -234,6 +293,7 @@ def _execute_commands(
     facts: dict,
     compose_path: Path,
     verbose: bool,
+    event_handler: EventHandler | None = None,
 ) -> tuple[list[CommandOutputItem], RuntimeError | None]:
     """Run all scenario commands in order. Returns (command_outputs, error)."""
     command_outputs: list[CommandOutputItem] = []
@@ -252,6 +312,8 @@ def _execute_commands(
                 verbose,
                 retry_attempts=cmd.retry.attempts,
                 retry_delay_s=cmd.retry.delay_s,
+                event_handler=event_handler,
+                command_id=cmd.id,
             )
             command_outputs.append((cmd.id, resolved, out, err))
             if not ok and error_msg:
@@ -269,6 +331,7 @@ def _execute_commands(
                 command_argv=resolved,
                 use_exec=use_exec,
                 detached=cmd.run.detached and use_exec,
+                event_handler=event_handler,
             )
             command_outputs.append((cmd.id, resolved, out, err))
             if not ok and error_msg:
@@ -324,6 +387,7 @@ def _run_compose_and_capture(
     topology: TopologyConfig,
     verbose: bool,
     project_root: Path,
+    event_handler: EventHandler | None = None,
 ) -> RunResult:
     """Run compose up (up nodes), then commands in order; return RunResult. Does not teardown."""
     start = time.perf_counter()
@@ -331,11 +395,14 @@ def _run_compose_and_capture(
     try:
         facts = _facts_by_name(scenario)
         logger.debug("Compose up services: %s", up_node_ids)
+        _emit(event_handler, "compose_up_started", services=up_node_ids)
         compose_up_stdout, compose_up_stderr = compose_up(
             compose_path, verbose=verbose, services=up_node_ids
         )
+        for node_id in up_node_ids:
+            _emit(event_handler, "service_up", node_id=node_id)
         command_outputs, cmd_error = _execute_commands(
-            scenario, facts, compose_path, verbose
+            scenario, facts, compose_path, verbose, event_handler=event_handler
         )
         if cmd_error is not None:
             return RunResult(
@@ -408,6 +475,7 @@ def run_scenario(
     keep: bool = False,
     verbose: bool = False,
     project_root: Path | None = None,
+    event_handler: EventHandler | None = None,
 ) -> RunResult:
     """Run a scenario: parse, generate compose, up, teardown (unless --keep)."""
     base = project_root or Path.cwd()
@@ -438,6 +506,7 @@ def run_scenario(
         topology,
         verbose,
         base,
+        event_handler=event_handler,
     )
 
     if not keep:

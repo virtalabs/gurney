@@ -10,7 +10,7 @@ nodes:
   - id: redis
     build: up
     networks: [clinical-vlan]
-  - id: blueflow-api
+  - id: blueflow
     build: up
     networks: [clinical-vlan]
   - id: celery-worker

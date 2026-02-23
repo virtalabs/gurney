@@ -5,7 +5,12 @@ from unittest.mock import patch
 
 import pytest
 
-from testbed.compose import compose_logs, compose_run, compose_up
+from testbed.compose import (
+    _run_with_optional_stream,
+    compose_logs,
+    compose_run,
+    compose_up,
+)
 
 
 def test_compose_up_returns_stdout_stderr(tmp_path: Path) -> None:
@@ -93,3 +98,19 @@ def test_compose_logs_returns_per_service_logs(tmp_path: Path) -> None:
     assert m.call_count == 2
     assert m.call_args_list[0].args[0][-1] == "s1"
     assert m.call_args_list[1].args[0][-1] == "s2"
+
+
+def test_compose_run_with_on_line_calls_run_with_optional_stream(tmp_path: Path) -> None:
+    """When on_line is provided, compose_run uses _run_with_optional_stream with that handler."""
+    compose_path = tmp_path / "docker-compose.yaml"
+    compose_path.write_text("services: {}")
+    lines_seen: list[tuple[str, str]] = []
+
+    def on_line(line: str, stream: str) -> None:
+        lines_seen.append((line, stream))
+
+    with patch("testbed.compose._run_with_optional_stream") as m:
+        m.return_value = ("out", "err", 0)
+        compose_run(compose_path, "svc", on_line=on_line)
+    m.assert_called_once()
+    assert m.call_args.args[1] is on_line

@@ -5,9 +5,11 @@ import logging
 import os
 import re
 import subprocess
+import threading
 import time
 import uuid
 from pathlib import Path
+from typing import Callable
 from urllib.parse import urlparse
 
 import yaml
@@ -20,6 +22,52 @@ from testbed.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Optional callback (line, stream_name) for streaming output. stream_name is "stdout" or "stderr".
+StreamLineHandler = Callable[[str, str], None]
+
+
+def _run_with_optional_stream(
+    cmd: list[str],
+    on_line: StreamLineHandler | None,
+) -> tuple[str, str, int]:
+    """Run command; if on_line is set, call it for each line of stdout/stderr. Returns (stdout, stderr, returncode)."""
+    if on_line is None:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        return (result.stdout or "", result.stderr or "", result.returncode)
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
+
+    def read_stdout() -> None:
+        if proc.stdout is None:
+            return
+        for line in iter(proc.stdout.readline, ""):
+            stdout_lines.append(line)
+            on_line(line, "stdout")
+
+    def read_stderr() -> None:
+        if proc.stderr is None:
+            return
+        for line in iter(proc.stderr.readline, ""):
+            stderr_lines.append(line)
+            on_line(line, "stderr")
+
+    t_out = threading.Thread(target=read_stdout)
+    t_err = threading.Thread(target=read_stderr)
+    t_out.start()
+    t_err.start()
+    t_out.join()
+    t_err.join()
+    proc.wait()
+    return ("".join(stdout_lines), "".join(stderr_lines), proc.returncode or 0)
+
 
 CHECK_IMAGE = "curlimages/curl"
 # Use -s -w "\n%{http_code}" (no -f) so status can be validated by runner.
@@ -396,21 +444,18 @@ def _expand_image(image: str) -> str:
 
 
 def compose_up(
-    compose_path: Path, verbose: bool = False, services: list[str] | None = None
+    compose_path: Path,
+    verbose: bool = False,
+    services: list[str] | None = None,
+    on_line: StreamLineHandler | None = None,
 ) -> tuple[str, str]:
     """Run docker compose up -d --wait. If services given, only start those.
-    Always captures output; returns (stdout, stderr)."""
+    Always captures output; returns (stdout, stderr). Optional on_line called per line when set."""
     cmd = ["docker", "compose", "-f", str(compose_path), "up", "-d", "--wait"]
     if services:
         cmd.extend(services)
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-    )
-    stdout = result.stdout or ""
-    stderr = result.stderr or ""
-    if result.returncode != 0:
+    stdout, stderr, returncode = _run_with_optional_stream(cmd, on_line)
+    if returncode != 0:
         msg = (stderr or stdout or "unknown error")[:500]
         logger.error("docker compose up failed: %s", msg)
         raise RuntimeError(
@@ -426,9 +471,10 @@ def compose_run(
     verbose: bool = False,
     no_deps: bool = False,
     command: list[str] | None = None,
+    on_line: StreamLineHandler | None = None,
 ) -> tuple[str, str]:
     """Run a service as one-off (docker compose run --rm --quiet-pull).
-    Always captures output; returns (stdout, stderr). Caller may print when verbose.
+    Always captures output; returns (stdout, stderr). Optional on_line called per line when set.
     no_deps: add --no-deps so Compose does not start/wait for dependencies (reduces stderr noise for checks).
     command: optional argv to run instead of service default (appended after service name).
     """
@@ -449,14 +495,8 @@ def compose_run(
     if command:
         run_cmd.extend(command)
 
-    result = subprocess.run(
-        run_cmd,
-        capture_output=True,
-        text=True,
-    )
-    stdout = result.stdout or ""
-    stderr = result.stderr or ""
-    if result.returncode != 0:
+    stdout, stderr, returncode = _run_with_optional_stream(run_cmd, on_line)
+    if returncode != 0:
         replay_failure = (
             {
                 "stderr_full": stderr[:2000],
@@ -485,7 +525,7 @@ def compose_run(
         )
         parts = [s.strip() for s in (stderr, stdout) if s.strip()]
         msg = "\n".join(parts) if parts else "unknown error"
-        if result.returncode == 22:
+        if returncode == 22:
             msg += " Curl exit 22 = HTTP 4xx/5xx (check endpoint and server)."
         logger.error("docker compose run %s failed: %s", service, msg[:500])
         raise RuntimeError(f"docker compose run {service} failed: {msg}")
@@ -498,8 +538,10 @@ def compose_exec(
     service: str,
     command: list[str],
     detached: bool = False,
+    on_line: StreamLineHandler | None = None,
 ) -> tuple[str, str]:
-    """Run a command in an existing service container via docker compose exec."""
+    """Run a command in an existing service container via docker compose exec.
+    Optional on_line called per line when set."""
     exec_cmd = [
         "docker",
         "compose",
@@ -512,14 +554,8 @@ def compose_exec(
         exec_cmd.append("-d")
     exec_cmd.append(service)
     exec_cmd += command
-    result = subprocess.run(
-        exec_cmd,
-        capture_output=True,
-        text=True,
-    )
-    stdout = result.stdout or ""
-    stderr = result.stderr or ""
-    if result.returncode != 0:
+    stdout, stderr, returncode = _run_with_optional_stream(exec_cmd, on_line)
+    if returncode != 0:
         parts = [s.strip() for s in (stderr, stdout) if s.strip()]
         msg = "\n".join(parts) if parts else "unknown error"
         logger.error("docker compose exec %s failed: %s", service, msg[:500])
