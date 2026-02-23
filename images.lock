@@ -1,8 +1,5 @@
 orthancteam/orthanc:25.12.3: sha256:4d728157c8b3459d334b3f4860d4dc76afdbdc3de71f1b817a3452ad3fa8c41b
-pcaps:
-  DICOM_C-ECHO-echoscu.pcap:
-    sha256: 7e3d8f249aaed473c3a388d6799587b1e20a6972869beaf01b87938c2c74d696
-    url: https://wiki.wireshark.org/uploads/__moin_import__/attachments/SampleCaptures/DICOM_C-ECHO-echoscu.pcap
+pcaps: {}
 postgres:16.6-alpine: sha256:1d04b9ba1d4996401f2552b51beda8187f175c0645c091e4781134fc9c9a3eef
-redis:7.4-alpine: sha256:02f2cc4882f8bf87c79a220ac958f58c700bdec0dfb9b9ea61b62fb0e8f1bfcf
-virtalabsinc/blueflow:testbed-3.0.0: sha256:34b854aae6c1e2123b3d6a2aaa7fd003026e1d14f9309e44d61375c0df676e9f
+redis:7.4-alpine: sha256:8b81dd37ff027bec4e516d41acfbe9fe2460070dc6d4a4570a2ac5b9d59df065
+virtalabsinc/blueflow:testbed-3.0.1: sha256:849d8373f1f0e83df7e9d6d13ec0a46db6566db45b05380afb2c217a0437cc40

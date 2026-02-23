@@ -30,6 +30,7 @@ dev = [
     "radon>=6.0",
     "ruff>=0.6",
     "prospector>=1.7",
+    "yamllint>=1.35",
 ]
 
 [project.scripts]

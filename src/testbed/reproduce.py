@@ -13,7 +13,7 @@ LOCKED_IMAGES = [
     "postgres:16.6-alpine",
     "redis:7.4-alpine",
     "orthancteam/orthanc:25.12.3",
-    "virtalabsinc/blueflow:testbed-3.0.0",
+    "virtalabsinc/blueflow:testbed-3.0.1",
 ]
 
 # Pcap artifacts: {filename: {"url": str, "sha256": str | None}}
