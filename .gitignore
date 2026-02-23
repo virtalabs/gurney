@@ -24,3 +24,6 @@ htmlcov/
 
 # Testbed build artifacts
 scenarios/*/.build/
+
+# Testbed logs
+var/

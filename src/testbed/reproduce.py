@@ -8,11 +8,12 @@ from pathlib import Path
 import yaml
 
 
-# Third-party images from testbed.yaml (exclude ${VAR} images)
+# Third-party images from testbed.yaml and topology-tapirx-dicom (exclude ${VAR} images)
 LOCKED_IMAGES = [
     "postgres:16.6-alpine",
     "redis:7.4-alpine",
     "orthancteam/orthanc:25.12.3",
+    "virtalabsinc/blueflow:testbed-3.0.0",
 ]
 
 # Pcap artifacts: {filename: {"url": str, "sha256": str | None}}
@@ -159,8 +160,17 @@ def pull_and_verify() -> None:
     _build_tapirx(project_root)
     _build_replay(project_root)
 
+    # Images that may require docker login; skip pull/verify without failing.
+    login_required_images = {"virtalabsinc/blueflow:testbed-3.0.0"}
+
     for image in LOCKED_IMAGES:
-        actual = _get_image_digest(image)
+        try:
+            actual = _get_image_digest(image)
+        except (RuntimeError, subprocess.CalledProcessError) as e:
+            if image in login_required_images:
+                print(f"  {image}: skip (pull failed, may require docker login)")
+                continue
+            raise
         expected = lock_data.get(image)
 
         if expected is None:

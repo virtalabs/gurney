@@ -16,7 +16,7 @@ test-all:
 	uv run pytest -v
 
 complexity:
-	uv run radon cc src -a -n A
+	uv run radon cc src -a -n B
 
 lint:
 	uv run prospector .

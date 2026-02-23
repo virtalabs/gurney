@@ -1,2 +1,26 @@
 name: smoke-docker
 topology: testbed.yaml
+
+facts: []
+
+nodes:
+  - id: postgres
+    build: up
+    networks: [clinical-vlan]
+  - id: redis
+    build: up
+    networks: [clinical-vlan]
+  - id: blueflow-api
+    build: up
+    networks: [clinical-vlan]
+  - id: celery-worker
+    build: up
+    networks: [clinical-vlan]
+  - id: tapirx
+    build: up
+    networks: [clinical-vlan]
+  - id: pacs-server
+    build: up
+    networks: [clinical-vlan]
+
+commands: []

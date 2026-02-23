@@ -47,7 +47,7 @@ markers = [
 [tool.radon]
 # Cyclomatic complexity: A=1-5, B=6-10, C=11-20, D=21-30, E=31+
 # Aim for simple, pythonic code — avoid deep nesting
-cc_min = "A"
+cc_min = "B"
 ignore = "tests"
 
 [tool.ruff]

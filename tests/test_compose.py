@@ -56,6 +56,29 @@ def test_compose_run_raises_on_nonzero() -> None:
     assert "docker compose run svc failed" in str(exc_info.value)
 
 
+def test_compose_run_with_command_includes_entrypoint_empty(tmp_path: Path) -> None:
+    """compose_run with command adds --entrypoint '' before service and appends full command."""
+    compose_path = tmp_path / "docker-compose.yaml"
+    compose_path.write_text("services: {}")
+    with patch("testbed.compose.subprocess.run") as m:
+        m.return_value = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        compose_run(
+            compose_path,
+            "replay",
+            command=["tcpreplay", "-i", "eth0", "/pcap/file.pcap"],
+        )
+    m.assert_called_once()
+    cmd = m.call_args.args[0]
+    # --entrypoint '' must appear before service name
+    idx_entrypoint = cmd.index("--entrypoint")
+    idx_service = cmd.index("replay")
+    assert cmd[idx_entrypoint] == "--entrypoint"
+    assert cmd[idx_entrypoint + 1] == ""
+    assert idx_entrypoint < idx_service
+    # Command args appear after service name
+    assert cmd[idx_service + 1 :] == ["tcpreplay", "-i", "eth0", "/pcap/file.pcap"]
+
+
 def test_compose_logs_returns_per_service_logs(tmp_path: Path) -> None:
     """compose_logs runs logs for each service and returns [(service, logs), ...]."""
     compose_path = tmp_path / "docker-compose.yaml"

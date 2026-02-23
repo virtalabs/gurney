@@ -29,7 +29,7 @@ nodes:
       timeout_s: 3
       retries: 5
 
-  - name: blueflow-api
+  - name: blueflow
     kind: docker
     image: ${BLUEFLOW_IMAGE:-virtalabsinc/blueflow:testbed-3.0.0}
     network: clinical-vlan
@@ -52,7 +52,7 @@ nodes:
     image: ${BLUEFLOW_IMAGE:-virtalabsinc/blueflow:testbed-3.0.0}
     network: clinical-vlan
     ip: 192.168.10.5
-    depends_on: [postgres, redis, blueflow-api]
+    depends_on: [postgres, redis, blueflow]
     command: uv run celery -A bf_opencore worker -l info
     environment:
       DATABASE_URL: postgresql://blueflow:testbed@192.168.10.2:5432/blueflow
@@ -65,10 +65,19 @@ nodes:
     image: ${TAPIRX_IMAGE:-tapirx:local}
     network: clinical-vlan
     ip: 192.168.10.6
-    depends_on: [blueflow-api]
+    depends_on: [blueflow]
     environment:
       BLUEFLOW_API_URL: http://192.168.10.4:8000/api
       LISTEN_INTERFACE: eth0
+
+  - name: replay
+    kind: docker
+    image: ${REPLAY_IMAGE:-replay:local}
+    network: clinical-vlan
+    ip: 192.168.10.7
+    depends_on: [tapirx]
+    volumes:
+      - "${PWD}/replay/pcap:/pcap:ro"
 
   - name: pacs-server
     kind: docker

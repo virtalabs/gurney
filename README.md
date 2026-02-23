@@ -32,7 +32,7 @@ Or use the `testbed` script after install: `testbed list`, `testbed run smoke-mi
 
 ## Scenarios
 
-Scenarios live in `scenarios/<name>/` with a `scenario.yaml` that names the scenario, references a topology file (e.g. `testbed.yaml`), and optionally lists `nodes` for a subset run.
+Scenarios live in `scenarios/<name>/` with a `scenario.yaml` that names the scenario, references a topology file (e.g. `testbed.yaml`), and optionally lists `nodes` for a subset run. You can also add **commands**: each command's `run.argv` is the **full command** (binary + arguments), e.g. `tcpreplay -i eth0 /pcap/file.pcap` or `tapirx -iface eth0 -apiurl http://...`. The testbed overrides the image entrypoint for one-off runs so this argv is executed as the main process. **Checks** (http_check commands) are a special case: a list of URLs to GET. The testbed runs a one-off curl container for each URL; if any request fails (e.g. non-2xx or connection error), the scenario fails. Use this to verify that a service received expected data (e.g. `http://blueflow-api:8000/api/assets` to confirm tapirx-live sent assets to BlueFlow). Optional **environment** is a per-node map of env var overrides (e.g. `environment.blueflow-api.DEFAULT_USERNAME: admin`); keys must be topology node names, and values are merged over the topology’s node env at compose generation time.
 
 ## TapirX playbook
 

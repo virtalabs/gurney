@@ -46,9 +46,6 @@ class MockAssetHandler(BaseHTTPRequestHandler):
         self.send_response(404)
         self.end_headers()
 
-    def log_message(self, format_str: str, *args: object) -> None:
-        pass  # Suppress access logs
-
 
 def main() -> None:
     server = HTTPServer(("0.0.0.0", 8000), MockAssetHandler)

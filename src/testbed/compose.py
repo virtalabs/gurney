@@ -1,13 +1,38 @@
 """Docker Compose generation and lifecycle management."""
 
+import json
+import logging
 import os
 import re
 import subprocess
+import time
+import uuid
 from pathlib import Path
+from urllib.parse import urlparse
 
 import yaml
 
-from testbed.models import NodeDef, SpanConfig, TopologyConfig
+from testbed.models import (
+    FactDef,
+    NodeDef,
+    ScenarioNodeDef,
+    TopologyConfig,
+)
+
+logger = logging.getLogger(__name__)
+
+CHECK_IMAGE = "curlimages/curl"
+# Use -s -w "\n%{http_code}" (no -f) so status can be validated by runner.
+CHECK_CURL_ARGS = [
+    "curl",
+    "-s",
+    "-w",
+    "\n%{http_code}",
+    "--retry",
+    "3",
+    "--retry-delay",
+    "2",
+]
 
 
 def _build_networks(topology: TopologyConfig) -> dict:
@@ -42,84 +67,308 @@ def _build_depends_on(node: NodeDef, topology: TopologyConfig) -> dict | None:
     return deps
 
 
+def _apply_networking(
+    service: dict,
+    node: NodeDef,
+    network_mode: str | None,
+    networks_override: dict[str, dict] | None,
+) -> None:
+    """Set network_mode or networks on service dict."""
+    if network_mode is not None:
+        service["network_mode"] = network_mode
+        return
+    if networks_override is not None:
+        service["networks"] = networks_override
+        return
+    network_config: dict = {}
+    if node.ip is not None:
+        network_config["ipv4_address"] = node.ip
+    service["networks"] = (
+        {node.network: network_config} if network_config else {node.network: {}}
+    )
+
+
+def _merge_env_into_service(
+    service: dict,
+    node: NodeDef,
+    environment_override: dict[str, str] | None,
+) -> None:
+    """Set service['environment'] from node env and override."""
+    env = dict(node.environment)
+    if environment_override:
+        env.update(environment_override)
+    if env:
+        service["environment"] = [f"{k}={v}" for k, v in env.items()]
+
+
+def _apply_healthcheck(service: dict, node: NodeDef) -> None:
+    """Set service healthcheck from node if present."""
+    if not node.healthcheck:
+        return
+    hc = node.healthcheck
+    service["healthcheck"] = {
+        "test": hc.test,
+        "interval": f"{hc.interval_s}s",
+        "timeout": f"{hc.timeout_s}s",
+        "retries": hc.retries,
+    }
+
+
+def _apply_optional_service_fields(
+    service: dict,
+    node: NodeDef,
+    topology: TopologyConfig,
+    environment_override: dict[str, str] | None,
+) -> None:
+    """Set ports, env, command, volumes, healthcheck, depends_on, cap_add if present."""
+    if node.ports:
+        service["ports"] = [f"{p}:{p}" for p in node.ports]
+    _merge_env_into_service(service, node, environment_override)
+    if node.command:
+        service["command"] = node.command.split()
+    if node.volumes:
+        service["volumes"] = node.volumes
+    _apply_healthcheck(service, node)
+    deps = _build_depends_on(node, topology)
+    if deps:
+        service["depends_on"] = deps
+    if node.cap_add:
+        service["cap_add"] = node.cap_add
+
+
 def _build_service(
     node: NodeDef,
     topology: TopologyConfig,
     verbose: bool = False,
     network_mode: str | None = None,
+    environment_override: dict[str, str] | None = None,
+    networks_override: dict[str, dict] | None = None,
 ) -> dict:
     """Build service dict for a single node."""
     service: dict = {
         "image": _expand_image(node.image),
         "labels": {"testbed.managed": "true"},
     }
-    if network_mode is not None:
-        service["network_mode"] = network_mode
-    else:
-        network_config: dict = {}
-        if node.ip is not None:
-            network_config["ipv4_address"] = node.ip
-        service["networks"] = (
-            {node.network: network_config} if network_config else {node.network: {}}
-        )
-
-    # When verbose: do NOT set tty/stdin_open for services. Containers with TTY
-    # do not have their stdout/stderr captured by the log driver, so
-    # "docker compose logs" returns empty and --verbose would show nothing.
-    if node.ports:
-        service["ports"] = [f"{p}:{p}" for p in node.ports]
-
-    if node.environment:
-        service["environment"] = [f"{k}={v}" for k, v in node.environment.items()]
-
-    if node.command:
-        service["command"] = node.command.split()
-
-    if node.volumes:
-        service["volumes"] = node.volumes
-
-    if node.healthcheck:
-        hc = node.healthcheck
-        service["healthcheck"] = {
-            "test": hc.test,
-            "interval": f"{hc.interval_s}s",
-            "timeout": f"{hc.timeout_s}s",
-            "retries": hc.retries,
-        }
-
-    deps = _build_depends_on(node, topology)
-    if deps:
-        service["depends_on"] = deps
-
-    if node.cap_add:
-        service["cap_add"] = node.cap_add
-
+    _apply_networking(service, node, network_mode, networks_override)
+    _apply_optional_service_fields(service, node, topology, environment_override)
     return service
+
+
+def _compose_ps_snapshot(compose_path: Path) -> dict:
+    """Best-effort service state snapshot for debugging."""
+    proc = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "-f",
+            str(compose_path),
+            "ps",
+            "--all",
+            "--format",
+            "json",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        return {"ps_error": (proc.stderr or proc.stdout or "").strip()[:400]}
+    raw = (proc.stdout or "").strip()
+    if not raw:
+        return {"services": []}
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, list):
+            services = [
+                {
+                    "service": item.get("Service"),
+                    "state": item.get("State"),
+                    "health": item.get("Health"),
+                    "exit_code": item.get("ExitCode"),
+                }
+                for item in parsed
+                if isinstance(item, dict)
+            ]
+            return {"services": services}
+    except json.JSONDecodeError:
+        pass
+    services = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(item, dict):
+            services.append(
+                {
+                    "service": item.get("Service"),
+                    "state": item.get("State"),
+                    "health": item.get("Health"),
+                    "exit_code": item.get("ExitCode"),
+                }
+            )
+    return {"services": services}
+
+
+def _service_logs_snapshot(compose_path: Path, service: str, tail: int = 120) -> str:
+    """Best-effort compose logs snapshot for one service."""
+    proc = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "-f",
+            str(compose_path),
+            "logs",
+            "--no-log-prefix",
+            f"--tail={tail}",
+            service,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        return (proc.stderr or proc.stdout or "").strip()[:600]
+    return (proc.stdout or "").strip()[:2000]
+
+
+def _service_ip_snapshot(compose_path: Path, service: str) -> str:
+    """Best-effort runtime container IP lookup for a compose service."""
+    ps = subprocess.run(
+        ["docker", "compose", "-f", str(compose_path), "ps", "-q", service],
+        capture_output=True,
+        text=True,
+    )
+    cid = (ps.stdout or "").strip().splitlines()
+    if ps.returncode != 0 or not cid:
+        return ""
+    inspect = subprocess.run(
+        [
+            "docker",
+            "inspect",
+            "-f",
+            "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
+            cid[0],
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if inspect.returncode != 0:
+        return ""
+    return (inspect.stdout or "").strip()
+
+
+def _build_check_services(check_urls: list[str], topology: TopologyConfig) -> dict:
+    """Build synthetic check-N services for each URL. Validates host matches a node."""
+    nodes_by_name = {n.name: n for n in topology.nodes}
+    services = {}
+    for i, url in enumerate(check_urls):
+        parsed = urlparse(url)
+        hostname = parsed.hostname
+        if not hostname:
+            raise ValueError(f"Check URL has no host: {url!r}")
+        if hostname not in nodes_by_name:
+            raise ValueError(
+                f"Check URL host {hostname!r} must match a topology node. "
+                f"Valid nodes: {sorted(nodes_by_name)}"
+            )
+        node = nodes_by_name[hostname]
+        condition = "service_healthy" if node.healthcheck else "service_started"
+        service = {
+            "image": CHECK_IMAGE,
+            "labels": {"testbed.managed": "true"},
+            "command": CHECK_CURL_ARGS + [url],
+            "depends_on": {hostname: {"condition": condition}},
+            "networks": {node.network: {}},
+        }
+        services[f"check-{i}"] = service
+    return services
+
+
+def _env_overrides_from_scenario(
+    scenario_nodes: list[ScenarioNodeDef],
+    scenario_facts: list[FactDef],
+) -> dict[str, dict[str, str]]:
+    """Build per-node env overrides from scenario nodes' env_from_fact."""
+    facts_by_name = {f.name: f for f in scenario_facts}
+    overrides: dict[str, dict[str, str]] = {}
+    for sn in scenario_nodes:
+        if sn.env_from_fact is None:
+            continue
+        if sn.env_from_fact not in facts_by_name:
+            continue
+        fact = facts_by_name[sn.env_from_fact]
+        if isinstance(fact.value, dict):
+            overrides[sn.id] = {k: str(v) for k, v in fact.value.items()}
+    return overrides
+
+
+def _build_service_for_node(
+    n: NodeDef,
+    topology: TopologyConfig,
+    verbose: bool,
+    scenario_node: ScenarioNodeDef | None,
+    node_env_override: dict[str, str] | None,
+    listener: str | None,
+) -> dict:
+    """Build one service dict for a topology node."""
+    if listener is not None:
+        return _build_service(
+            n,
+            topology,
+            verbose,
+            network_mode=f"service:{listener}",
+            environment_override=node_env_override,
+        )
+    if scenario_node is not None and scenario_node.networks is not None:
+        networks_override = {net: {} for net in scenario_node.networks}
+        # Preserve static IP when scenario narrows/overrides network attachments.
+        if n.ip is not None and n.network in networks_override:
+            networks_override[n.network] = {"ipv4_address": n.ip}
+        return _build_service(
+            n,
+            topology,
+            verbose,
+            environment_override=node_env_override,
+            networks_override=networks_override,
+        )
+    return _build_service(n, topology, verbose, environment_override=node_env_override)
 
 
 def generate_compose(
     topology: TopologyConfig,
     output_dir: Path,
     verbose: bool = False,
-    span: list[SpanConfig] | None = None,
+    scenario_nodes: list[ScenarioNodeDef] | None = None,
+    scenario_facts: list[FactDef] | None = None,
+    check_urls: list[str] | None = None,
 ) -> Path:
     """Render docker-compose.yaml from topology and write to output_dir. Returns path to file.
-    verbose is used by the runner to decide whether to collect and show logs after the run.
-    span: sender services get network_mode service:<listener> and no networks."""
+    scenario_nodes: ordered node defs; span and env_from_fact drive network_mode and env.
+    scenario_facts: used to resolve env_from_fact map values.
+    check_urls: URLs for synthetic check-N services (http_check commands)."""
     output_dir.mkdir(parents=True, exist_ok=True)
     compose_path = output_dir / "docker-compose.yaml"
 
-    sender_to_listener = {s.sender: s.listener for s in (span or [])}
+    nodes = scenario_nodes or []
+    facts = scenario_facts or []
+    scenario_node_by_id = {sn.id: sn for sn in nodes}
+    sender_to_listener = {sn.id: sn.span for sn in nodes if sn.span is not None}
+    overrides = _env_overrides_from_scenario(nodes, facts)
+
     networks = _build_networks(topology)
     services = {}
     for n in topology.nodes:
+        sn = scenario_node_by_id.get(n.name)
+        node_env_override = overrides.get(n.name)
         listener = sender_to_listener.get(n.name)
-        if listener is not None:
-            services[n.name] = _build_service(
-                n, topology, verbose, network_mode=f"service:{listener}"
-            )
-        else:
-            services[n.name] = _build_service(n, topology, verbose)
+        services[n.name] = _build_service_for_node(
+            n, topology, verbose, sn, node_env_override, listener
+        )
+
+    if check_urls:
+        services.update(_build_check_services(check_urls, topology))
 
     # Use default_style to avoid long command strings being folded;
     # "-flag" at line start would be parsed as YAML list element
@@ -132,6 +381,7 @@ def generate_compose(
             default_style='"',
         )
 
+    logger.debug("Wrote compose file: %s", compose_path)
     return compose_path
 
 
@@ -161,16 +411,28 @@ def compose_up(
     stdout = result.stdout or ""
     stderr = result.stderr or ""
     if result.returncode != 0:
+        msg = (stderr or stdout or "unknown error")[:500]
+        logger.error("docker compose up failed: %s", msg)
         raise RuntimeError(
             f"docker compose up failed: {stderr or stdout or 'unknown error'}"
         )
+    logger.debug("Compose up succeeded: %s", compose_path)
     return (stdout, stderr)
 
 
-def compose_run(compose_path: Path, service: str, verbose: bool = False) -> tuple[str, str]:
+def compose_run(
+    compose_path: Path,
+    service: str,
+    verbose: bool = False,
+    no_deps: bool = False,
+    command: list[str] | None = None,
+) -> tuple[str, str]:
     """Run a service as one-off (docker compose run --rm --quiet-pull).
-    Always captures output; returns (stdout, stderr). Caller may print when verbose."""
-    cmd = [
+    Always captures output; returns (stdout, stderr). Caller may print when verbose.
+    no_deps: add --no-deps so Compose does not start/wait for dependencies (reduces stderr noise for checks).
+    command: optional argv to run instead of service default (appended after service name).
+    """
+    run_cmd = [
         "docker",
         "compose",
         "-f",
@@ -178,25 +440,99 @@ def compose_run(compose_path: Path, service: str, verbose: bool = False) -> tupl
         "run",
         "--rm",
         "--quiet-pull",
-        service,
     ]
+    if no_deps:
+        run_cmd.append("--no-deps")
+    if command:
+        run_cmd.extend(["--entrypoint", ""])
+    run_cmd.append(service)
+    if command:
+        run_cmd.extend(command)
+
     result = subprocess.run(
-        cmd,
+        run_cmd,
         capture_output=True,
         text=True,
     )
     stdout = result.stdout or ""
     stderr = result.stderr or ""
     if result.returncode != 0:
-        raise RuntimeError(
-            f"docker compose run {service} failed: {stderr or stdout}"
+        replay_failure = (
+            {
+                "stderr_full": stderr[:2000],
+                "stdout_full": stdout[:2000],
+            }
+            if service == "replay"
+            else {}
         )
+        snapshot = (
+            _compose_ps_snapshot(compose_path)
+            if service.startswith("check-")
+            else {"services": []}
+        )
+        blueflow_logs = (
+            _service_logs_snapshot(compose_path, "blueflow-api")
+            if service.startswith("check-")
+            else ""
+        )
+        ip_snapshot = (
+            {
+                "postgres": _service_ip_snapshot(compose_path, "postgres"),
+                "blueflow_api": _service_ip_snapshot(compose_path, "blueflow-api"),
+            }
+            if service.startswith("check-")
+            else {}
+        )
+        parts = [s.strip() for s in (stderr, stdout) if s.strip()]
+        msg = "\n".join(parts) if parts else "unknown error"
+        if result.returncode == 22:
+            msg += " Curl exit 22 = HTTP 4xx/5xx (check endpoint and server)."
+        logger.error("docker compose run %s failed: %s", service, msg[:500])
+        raise RuntimeError(f"docker compose run {service} failed: {msg}")
+    logger.debug("Compose run %s succeeded", service)
+    return (stdout, stderr)
+
+
+def compose_exec(
+    compose_path: Path,
+    service: str,
+    command: list[str],
+    detached: bool = False,
+) -> tuple[str, str]:
+    """Run a command in an existing service container via docker compose exec."""
+    exec_cmd = [
+        "docker",
+        "compose",
+        "-f",
+        str(compose_path),
+        "exec",
+        "-T",
+    ]
+    if detached:
+        exec_cmd.append("-d")
+    exec_cmd.append(service)
+    exec_cmd += command
+    result = subprocess.run(
+        exec_cmd,
+        capture_output=True,
+        text=True,
+    )
+    stdout = result.stdout or ""
+    stderr = result.stderr or ""
+    if result.returncode != 0:
+        parts = [s.strip() for s in (stderr, stdout) if s.strip()]
+        msg = "\n".join(parts) if parts else "unknown error"
+        logger.error("docker compose exec %s failed: %s", service, msg[:500])
+        raise RuntimeError(f"docker compose exec {service} failed: {msg}")
+    logger.debug("Compose exec %s succeeded", service)
     return (stdout, stderr)
 
 
 def compose_logs(compose_path: Path, services: list[str]) -> list[tuple[str, str]]:
     """Fetch logs for each service. Returns [(service_name, logs), ...] in order.
-    Does not raise on non-zero (e.g. exited containers); returns whatever was captured."""
+    Does not raise on non-zero (e.g. exited containers); returns whatever was captured.
+    """
+    logger.debug("Fetching compose logs for %s", services)
     result: list[tuple[str, str]] = []
     for service in services:
         proc = subprocess.run(
@@ -221,6 +557,7 @@ def compose_logs(compose_path: Path, services: list[str]) -> list[tuple[str, str
 
 def compose_down(compose_path: Path) -> None:
     """Run docker compose down -v --remove-orphans."""
+    logger.debug("Compose down: %s", compose_path)
     subprocess.run(
         [
             "docker",
@@ -238,6 +575,7 @@ def compose_down(compose_path: Path) -> None:
 
 def force_cleanup() -> None:
     """Remove all containers and networks with testbed.managed=true label."""
+    logger.debug("Force cleanup: removing testbed-managed containers and networks")
     # Stop and remove containers
     result = subprocess.run(
         ["docker", "ps", "-aq", "--filter", "label=testbed.managed=true"],
