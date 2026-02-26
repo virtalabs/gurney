@@ -118,13 +118,3 @@ commands:
     retry:
       attempts: 2
       delay_s: 2
- 
-  - id: get-asset-tags
-    node: replay
-    run:
-      argv:
-        - curl
-        - { fact: asset_tags_url }
-    retry:
-      attempts: 2
-      delay_s: 2
