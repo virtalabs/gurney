@@ -19,8 +19,10 @@ from testbed.compose import (
     generate_compose,
 )
 from testbed.models import (
+    ArgvArtifactRef,
     NodeDef,
     ScenarioConfig,
+    TopologyArtifactDef,
     TopologyConfig,
     resolve_argv,
 )
@@ -30,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 # Extensions treated as readable text for verbose output
 OUTPUT_READABLE_SUFFIXES = (".txt", ".json", ".jsonl", ".yaml", ".yml", ".log")
-RUNTIME_PCAP_DIR = Path("var") / "artifacts" / "pcap"
+RUNTIME_ARTIFACT_DIR = Path("var") / "artifacts"
 
 # (command_id, resolved_argv, stdout, stderr)
 CommandOutputItem = tuple[str, list[str], str, str]
@@ -120,7 +122,11 @@ def _filter_topology(topology: TopologyConfig, node_names: list[str]) -> Topolog
     filtered_nodes = [n for n in topology.nodes if n.name in node_set]
     network_names = {n.network for n in filtered_nodes}
     filtered_networks = [n for n in topology.networks if n.name in network_names]
-    return TopologyConfig(networks=filtered_networks, nodes=filtered_nodes)
+    return TopologyConfig(
+        networks=filtered_networks,
+        artifacts=topology.artifacts,
+        nodes=filtered_nodes,
+    )
 
 
 def _facts_by_name(scenario: ScenarioConfig) -> dict:
@@ -353,11 +359,63 @@ def _collect_check_urls(scenario: ScenarioConfig) -> list[str]:
     facts = _facts_by_name(scenario)
     urls: list[str] = []
     for cmd in scenario.commands:
+        if not cmd.run.argv:
+            continue
+        first = cmd.run.argv[0]
+        if first != "http_check":
+            continue
         resolved = resolve_argv(cmd.run.argv, facts)
-        if len(resolved) >= 2 and resolved[0] == "http_check":
+        if len(resolved) >= 2:
             urls.append(resolved[1])
     return urls
 
+
+def _artifact_map(topology: TopologyConfig) -> dict[str, TopologyArtifactDef]:
+    return {artifact.id: artifact for artifact in topology.artifacts}
+
+
+def _collect_artifact_refs_from_argv(argv: list[str | object]) -> set[str]:
+    refs: set[str] = set()
+    for item in argv:
+        if isinstance(item, ArgvArtifactRef):
+            refs.add(item.artifact)
+    return refs
+
+
+def _validate_artifact_grants_against_topology(
+    scenario: ScenarioConfig,
+    topology: TopologyConfig,
+) -> None:
+    """Validate scenario artifact grants and command artifact refs against topology artifacts."""
+    artifacts = _artifact_map(topology)
+    node_by_id = {node.id: node for node in scenario.nodes}
+
+    for node in scenario.nodes:
+        for artifact_id in node.artifacts:
+            if artifact_id not in artifacts:
+                raise ValueError(
+                    f"Scenario node {node.id!r} declares unknown artifact {artifact_id!r}. "
+                    "Declare it in topology.yaml artifacts[].id."
+                )
+
+    for cmd in scenario.commands:
+        refs = _collect_artifact_refs_from_argv(cmd.run.argv)
+        if not refs:
+            continue
+        if cmd.node not in node_by_id:
+            continue
+        granted = set(node_by_id[cmd.node].artifacts)
+        for artifact_id in refs:
+            if artifact_id not in artifacts:
+                raise ValueError(
+                    f"Command {cmd.id!r} references unknown artifact {artifact_id!r}. "
+                    "Declare it in topology.yaml artifacts[].id."
+                )
+            if artifact_id not in granted:
+                raise ValueError(
+                    f"Command {cmd.id!r} on node {cmd.node!r} references artifact "
+                    f"{artifact_id!r} but it is not granted in nodes[].artifacts."
+                )
 
 def _topology_id_from_topology_file(topology_file: str) -> str | None:
     """Extract topology id from path like topologies/<topology-id>/topology.yaml."""
@@ -367,46 +425,49 @@ def _topology_id_from_topology_file(topology_file: str) -> str | None:
     return None
 
 
-def _iter_required_pcap_rel_paths(
-    scenario: ScenarioConfig, facts: dict[str, Any]
-) -> list[str]:
-    """Return unique relative pcap paths referenced by command argv entries under /pcap/."""
-    rel_paths: list[str] = []
+def _iter_required_artifact_ids(scenario: ScenarioConfig) -> list[str]:
+    """Return unique artifact IDs referenced by command argv entries."""
+    artifact_ids: list[str] = []
     seen: set[str] = set()
     for cmd in scenario.commands:
-        resolved = resolve_argv(cmd.run.argv, facts)
-        for arg in resolved:
-            if not arg.startswith("/pcap/"):
+        for item in cmd.run.argv:
+            if not isinstance(item, ArgvArtifactRef):
                 continue
-            rel = arg.removeprefix("/pcap/").lstrip("/")
-            if not rel or rel in seen:
+            if item.artifact in seen:
                 continue
-            seen.add(rel)
-            rel_paths.append(rel)
-    return rel_paths
+            seen.add(item.artifact)
+            artifact_ids.append(item.artifact)
+    return artifact_ids
 
 
-def _stage_required_pcaps(
+def _stage_required_artifacts(
     scenario: ScenarioConfig,
-    facts: dict[str, Any],
+    topology: TopologyConfig,
     project_root: Path,
 ) -> None:
-    """Stage required pcap files into var/artifacts/pcap, preferring topology fixtures."""
-    required_rel_paths = _iter_required_pcap_rel_paths(scenario, facts)
-    if not required_rel_paths:
+    """Stage required artifact files into var/artifacts, preferring topology fixtures."""
+    required_artifact_ids = _iter_required_artifact_ids(scenario)
+    if not required_artifact_ids:
         return
+    artifacts = _artifact_map(topology)
     topology_id = _topology_id_from_topology_file(scenario.topology)
     fixture_root = (
         project_root / "topologies" / topology_id / "fixtures" / "pcap"
         if topology_id
         else None
     )
-    cache_root = project_root / RUNTIME_PCAP_DIR
+    cache_root = project_root / RUNTIME_ARTIFACT_DIR
     cache_root.mkdir(parents=True, exist_ok=True)
 
-    for rel in required_rel_paths:
-        cache_path = cache_root / rel
-        fixture_path = fixture_root / rel if fixture_root else None
+    for artifact_id in required_artifact_ids:
+        if artifact_id not in artifacts:
+            raise RuntimeError(
+                f"Missing required artifact id {artifact_id!r}. "
+                "Declare it in topology.yaml artifacts[].id."
+            )
+        filename = artifacts[artifact_id].filename
+        cache_path = cache_root / filename
+        fixture_path = fixture_root / filename if fixture_root else None
         if fixture_path is not None and fixture_path.is_file():
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             if not cache_path.exists() or not cmp(fixture_path, cache_path, shallow=False):
@@ -420,19 +481,21 @@ def _stage_required_pcaps(
             else "<topologies/<topology-id>/fixtures/pcap/...>"
         )
         raise RuntimeError(
-            "Missing required pcap artifact for scenario command argv:\n"
-            f"  /pcap/{rel}\n"
+            "Missing required artifact for scenario command argv:\n"
+            f"  artifact id: {artifact_id}\n"
+            f"  runtime path: /opt/artifacts/{filename}\n"
             f"Expected one of:\n"
             f"  - {expected_fixture}\n"
             f"  - {cache_path}\n"
             "Fix:\n"
             "  - add the file under topology fixtures, or\n"
-            "  - run `make pull` to populate var/artifacts/pcap"
+            "  - run `make pull` to populate var/artifacts"
         )
 
 
 def _execute_commands(
     scenario: ScenarioConfig,
+    topology: TopologyConfig,
     facts: dict,
     compose_path: Path,
     verbose: bool,
@@ -442,8 +505,17 @@ def _execute_commands(
     command_outputs: list[CommandOutputItem] = []
     check_index = 0
     build_by_node = {node.id: node.build for node in scenario.nodes}
+    artifact_by_id = _artifact_map(topology)
+    node_artifacts = {node.id: set(node.artifacts) for node in scenario.nodes}
     for cmd in scenario.commands:
-        resolved = resolve_argv(cmd.run.argv, facts)
+        resolved = resolve_argv(
+            cmd.run.argv,
+            facts,
+            artifacts_by_id=artifact_by_id,
+            allowed_artifact_ids=node_artifacts.get(cmd.node, set()),
+            command_id=cmd.id,
+            node_id=cmd.node,
+        )
         if len(resolved) >= 2 and resolved[0] == "http_check":
             url = resolved[1]
             check_name = f"check-{check_index}"
@@ -545,7 +617,12 @@ def _run_compose_and_capture(
         for node_id in up_node_ids:
             _emit(event_handler, "service_up", node_id=node_id)
         command_outputs, cmd_error = _execute_commands(
-            scenario, facts, compose_path, verbose, event_handler=event_handler
+            scenario,
+            topology,
+            facts,
+            compose_path,
+            verbose,
+            event_handler=event_handler,
         )
         if cmd_error is not None:
             return RunResult(
@@ -625,12 +702,13 @@ def run_scenario(
     scenario = load_scenario(scenario_dir)
     topology = load_topology(scenario.topology, base_dir=base)
 
-    facts = _facts_by_name(scenario)
-    _stage_required_pcaps(scenario, facts, base)
+    _validate_artifact_grants_against_topology(scenario, topology)
+    _stage_required_artifacts(scenario, topology, base)
 
     node_names = [n.id for n in scenario.nodes]
     topology = _filter_topology(topology, node_names)
     _validate_scenario_against_topology(scenario, topology)
+    facts = _facts_by_name(scenario)
 
     check_urls = _collect_check_urls(scenario)
     build_dir = scenario_dir / ".build"

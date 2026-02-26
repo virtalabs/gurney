@@ -1,6 +1,8 @@
 """CLI output tests: default one-line output; verbose layered output."""
 
+import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -148,23 +150,14 @@ def test_run_failure_default_output_structure() -> None:
     assert "Command 'replay-dicom' failed" in result.stderr
 
 
-def test_run_ui_classic_explicit_same_as_default() -> None:
-    """--ui classic produces the same structure as default (no --ui)."""
+def test_run_rejects_removed_ui_flag() -> None:
+    """`--ui` is removed in favor of root-level `--json`."""
     root = Path(__file__).resolve().parent.parent
     if not _scenario_dir_exists(root, SMOKE_MINIMAL_REF):
         pytest.skip("smoke-minimal scenario not found")
-    with patch("testbed.cli.run_scenario") as m:
-        m.return_value = RunResult(
-            scenario="smoke-minimal",
-            passed=True,
-            duration_s=1.0,
-            up_node_ids=["api"],
-            command_outputs=[],
-        )
-        result = runner.invoke(app, ["run", SMOKE_MINIMAL_REF, "--ui", "classic"])
-    assert result.exit_code == 0
-    assert "  up api" in result.stdout
-    assert "PASS smoke-minimal (1.0s)" in result.stdout
+    result = runner.invoke(app, ["run", SMOKE_MINIMAL_REF, "--ui", "classic"])
+    assert result.exit_code != 0
+    assert "No such option: --ui" in result.stderr
 
 
 def test_run_default_json_command_output_prettified() -> None:
@@ -294,3 +287,162 @@ def test_pull_with_scenario_ref_resolves_topology_id() -> None:
         result = runner.invoke(app, ["pull", TAPIRX_DISCOVERY_REF])
     assert result.exit_code == 0
     m.assert_called_once_with("blueflow-local")
+
+
+def test_run_json_emits_ndjson_envelope_and_terminal_event() -> None:
+    """`testbed --json run` emits NDJSON started/event/completed lines."""
+    root = Path(__file__).resolve().parent.parent
+    if not _scenario_dir_exists(root, SMOKE_MINIMAL_REF):
+        pytest.skip("smoke-minimal scenario not found")
+
+    def _fake_run(*_args, **kwargs):
+        handler = kwargs["event_handler"]
+        handler(SimpleNamespace(kind="command_started", payload={"command_id": "check"}))
+        return RunResult(
+            scenario="smoke-minimal",
+            passed=True,
+            duration_s=0.4,
+            up_node_ids=[],
+            command_outputs=[],
+        )
+
+    with patch("testbed.cli.run_scenario", side_effect=_fake_run):
+        result = runner.invoke(app, ["--json", "run", SMOKE_MINIMAL_REF])
+
+    assert result.exit_code == 0
+    events = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+    assert events[0]["command"] == "run"
+    assert events[0]["event"] == "started"
+    assert events[1]["event"] == "command_started"
+    assert events[-1]["event"] == "completed"
+    assert events[-1]["payload"]["passed"] is True
+
+
+def test_list_json_emits_started_topology_completed() -> None:
+    """`testbed --json list` emits a consistent NDJSON event sequence."""
+    result = runner.invoke(app, ["--json", "list"])
+    assert result.exit_code == 0
+    events = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+    assert events[0]["command"] == "list"
+    assert events[0]["event"] == "started"
+    assert events[-1]["event"] == "completed"
+    assert "scenario_count" in events[-1]["payload"]
+
+
+def test_list_appended_json_emits_started_topology_completed() -> None:
+    """`testbed list --json` emits the same NDJSON sequence."""
+    result = runner.invoke(app, ["list", "--json"])
+    assert result.exit_code == 0
+    events = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+    assert events[0]["command"] == "list"
+    assert events[0]["event"] == "started"
+    assert events[-1]["event"] == "completed"
+    assert "scenario_count" in events[-1]["payload"]
+
+
+def test_pull_json_emits_progress_and_terminal_events() -> None:
+    """`testbed --json pull` forwards reproduce progress events as NDJSON."""
+    root = Path(__file__).resolve().parent.parent
+    if not (root / "topologies" / "blueflow-local" / "topology.yaml").exists():
+        pytest.skip("blueflow-local topology not found")
+
+    def _fake_pull(topology_id, reporter=None, emit_text=True):
+        assert topology_id == "blueflow-local"
+        assert reporter is not None
+        assert emit_text is False
+        reporter("config_loaded", {"topology_id": topology_id})
+
+    with patch("testbed.cli.pull_and_verify", side_effect=_fake_pull):
+        result = runner.invoke(app, ["--json", "pull", "blueflow-local"])
+
+    assert result.exit_code == 0
+    events = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+    assert events[0]["event"] == "started"
+    assert any(event["event"] == "config_loaded" for event in events)
+    assert events[-1]["event"] == "completed"
+
+
+def test_pull_appended_json_emits_progress_and_terminal_events() -> None:
+    """`testbed pull <target> --json` forwards progress as NDJSON."""
+    root = Path(__file__).resolve().parent.parent
+    if not (root / "topologies" / "blueflow-local" / "topology.yaml").exists():
+        pytest.skip("blueflow-local topology not found")
+
+    def _fake_pull(topology_id, reporter=None, emit_text=True):
+        assert topology_id == "blueflow-local"
+        assert reporter is not None
+        assert emit_text is False
+        reporter("config_loaded", {"topology_id": topology_id})
+
+    with patch("testbed.cli.pull_and_verify", side_effect=_fake_pull):
+        result = runner.invoke(app, ["pull", "blueflow-local", "--json"])
+
+    assert result.exit_code == 0
+    events = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+    assert events[0]["event"] == "started"
+    assert any(event["event"] == "config_loaded" for event in events)
+    assert events[-1]["event"] == "completed"
+
+
+def test_teardown_json_emits_started_completed() -> None:
+    """`testbed --json teardown` emits lifecycle NDJSON events."""
+    with patch("testbed.cli.force_cleanup"):
+        result = runner.invoke(app, ["--json", "teardown"])
+    assert result.exit_code == 0
+    events = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+    assert [event["event"] for event in events] == ["started", "completed"]
+
+
+def test_teardown_appended_json_emits_started_completed() -> None:
+    """`testbed teardown --json` emits lifecycle NDJSON events."""
+    with patch("testbed.cli.force_cleanup"):
+        result = runner.invoke(app, ["teardown", "--json"])
+    assert result.exit_code == 0
+    events = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+    assert [event["event"] for event in events] == ["started", "completed"]
+
+
+def test_run_appended_json_emits_ndjson_envelope_and_terminal_event() -> None:
+    """`testbed run <scenario> --json` emits NDJSON started/event/completed lines."""
+    root = Path(__file__).resolve().parent.parent
+    if not _scenario_dir_exists(root, SMOKE_MINIMAL_REF):
+        pytest.skip("smoke-minimal scenario not found")
+
+    def _fake_run(*_args, **kwargs):
+        handler = kwargs["event_handler"]
+        handler(SimpleNamespace(kind="command_started", payload={"command_id": "check"}))
+        return RunResult(
+            scenario="smoke-minimal",
+            passed=True,
+            duration_s=0.4,
+            up_node_ids=[],
+            command_outputs=[],
+        )
+
+    with patch("testbed.cli.run_scenario", side_effect=_fake_run):
+        result = runner.invoke(app, ["run", SMOKE_MINIMAL_REF, "--json"])
+
+    assert result.exit_code == 0
+    events = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+    assert events[0]["command"] == "run"
+    assert events[0]["event"] == "started"
+    assert events[1]["event"] == "command_started"
+    assert events[-1]["event"] == "completed"
+    assert events[-1]["payload"]["passed"] is True
+
+
+def test_duplicate_json_flag_fails_for_list() -> None:
+    """Passing root and appended --json together should fail clearly."""
+    result = runner.invoke(app, ["--json", "list", "--json"])
+    assert result.exit_code != 0
+    assert "Do not pass --json twice" in result.stderr
+
+
+def test_duplicate_json_flag_fails_for_run() -> None:
+    """Duplicate --json should fail before scenario execution."""
+    root = Path(__file__).resolve().parent.parent
+    if not _scenario_dir_exists(root, SMOKE_MINIMAL_REF):
+        pytest.skip("smoke-minimal scenario not found")
+    result = runner.invoke(app, ["--json", "run", SMOKE_MINIMAL_REF, "--json"])
+    assert result.exit_code != 0
+    assert "Do not pass --json twice" in result.stderr

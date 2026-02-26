@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "testbed"
 version = "0.1.0"
-description = "BlueFlow Testbed — reproducible test environment for passive and active scanning pipelines"
+description = "VirtaLabs Testbed — reproducible test environment for rapidly testing passive and active scanning pipelines"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }

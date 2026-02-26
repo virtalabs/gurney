@@ -81,6 +81,7 @@ CHECK_CURL_ARGS = [
     "--retry-delay",
     "2",
 ]
+ARTIFACTS_VOLUME = "${PWD}/var/artifacts:/opt/artifacts:ro"
 
 
 def _build_networks(topology: TopologyConfig) -> dict:
@@ -167,6 +168,7 @@ def _apply_optional_service_fields(
     node: NodeDef,
     topology: TopologyConfig,
     environment_override: dict[str, str] | None,
+    mount_artifacts: bool = False,
 ) -> None:
     """Set ports, env, command, volumes, healthcheck, depends_on, cap_add if present."""
     if node.ports:
@@ -174,8 +176,12 @@ def _apply_optional_service_fields(
     _merge_env_into_service(service, node, environment_override)
     if node.command:
         service["command"] = node.command.split()
-    if node.volumes:
-        service["volumes"] = node.volumes
+    volumes = list(node.volumes)
+    if mount_artifacts:
+        volumes.append(ARTIFACTS_VOLUME)
+    if volumes:
+        deduped = list(dict.fromkeys(volumes))
+        service["volumes"] = deduped
     _apply_healthcheck(service, node)
     deps = _build_depends_on(node, topology)
     if deps:
@@ -191,6 +197,7 @@ def _build_service(
     network_mode: str | None = None,
     environment_override: dict[str, str] | None = None,
     networks_override: dict[str, dict] | None = None,
+    mount_artifacts: bool = False,
 ) -> dict:
     """Build service dict for a single node."""
     service: dict = {
@@ -198,7 +205,13 @@ def _build_service(
         "labels": {"testbed.managed": "true"},
     }
     _apply_networking(service, node, network_mode, networks_override)
-    _apply_optional_service_fields(service, node, topology, environment_override)
+    _apply_optional_service_fields(
+        service,
+        node,
+        topology,
+        environment_override,
+        mount_artifacts=mount_artifacts,
+    )
     return service
 
 
@@ -365,6 +378,7 @@ def _build_service_for_node(
     scenario_node: ScenarioNodeDef | None,
     node_env_override: dict[str, str] | None,
     listener: str | None,
+    mount_artifacts: bool = False,
 ) -> dict:
     """Build one service dict for a topology node."""
     if listener is not None:
@@ -374,6 +388,7 @@ def _build_service_for_node(
             verbose,
             network_mode=f"service:{listener}",
             environment_override=node_env_override,
+            mount_artifacts=mount_artifacts,
         )
     if scenario_node is not None and scenario_node.networks is not None:
         networks_override = {net: {} for net in scenario_node.networks}
@@ -386,8 +401,15 @@ def _build_service_for_node(
             verbose,
             environment_override=node_env_override,
             networks_override=networks_override,
+            mount_artifacts=mount_artifacts,
         )
-    return _build_service(n, topology, verbose, environment_override=node_env_override)
+    return _build_service(
+        n,
+        topology,
+        verbose,
+        environment_override=node_env_override,
+        mount_artifacts=mount_artifacts,
+    )
 
 
 def generate_compose(
@@ -410,6 +432,7 @@ def generate_compose(
     scenario_node_by_id = {sn.id: sn for sn in nodes}
     sender_to_listener = {sn.id: sn.span for sn in nodes if sn.span is not None}
     overrides = _env_overrides_from_scenario(nodes, facts)
+    artifact_grants = {sn.id for sn in nodes if sn.artifacts}
 
     networks = _build_networks(topology)
     services = {}
@@ -417,8 +440,9 @@ def generate_compose(
         sn = scenario_node_by_id.get(n.name)
         node_env_override = overrides.get(n.name)
         listener = sender_to_listener.get(n.name)
+        mount_artifacts = n.name in artifact_grants
         services[n.name] = _build_service_for_node(
-            n, topology, verbose, sn, node_env_override, listener
+            n, topology, verbose, sn, node_env_override, listener, mount_artifacts
         )
 
     if check_urls:

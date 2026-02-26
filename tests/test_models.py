@@ -3,6 +3,7 @@
 import pytest
 
 from testbed.models import (
+    ArgvArtifactRef,
     ArgvFactRef,
     CommandDef,
     CommandRunDef,
@@ -12,6 +13,7 @@ from testbed.models import (
     RetryConfig,
     ScenarioConfig,
     ScenarioNodeDef,
+    TopologyArtifactDef,
     TopologyConfig,
     resolve_argv,
 )
@@ -117,6 +119,12 @@ def test_topology_rejects_circular_depends_on() -> None:
                 ),
             ],
         )
+
+
+def test_topology_rejects_unknown_keys() -> None:
+    """Topology models reject unknown keys via strict schema."""
+    with pytest.raises(ValueError):
+        NetworkDef(name="net1", cidr="192.168.10.0/24", rogue=True)
 
 
 # --- Scenario DSL v2 ---
@@ -231,6 +239,12 @@ def test_scenario_node_rejects_span_and_networks() -> None:
         )
 
 
+def test_scenario_rejects_unknown_keys() -> None:
+    """Scenario models reject unknown keys via strict schema."""
+    with pytest.raises(ValueError):
+        ScenarioNodeDef(id="n", build="up", networks=["net1"], rogue=True)
+
+
 def test_scenario_config_rejects_unknown_fact_ref_in_argv() -> None:
     """ScenarioConfig rejects command argv referencing unknown fact."""
     with pytest.raises(ValueError, match="unknown fact"):
@@ -280,6 +294,48 @@ def test_resolve_argv_substitutes_fact() -> None:
     facts = {f.name: f for f in [FactDef(name="url", value="http://api:8000")]}
     out = resolve_argv(["curl", ArgvFactRef(fact="url")], facts)
     assert out == ["curl", "http://api:8000"]
+
+
+def test_resolve_argv_substitutes_artifact_path() -> None:
+    """resolve_argv substitutes ArgvArtifactRef with /opt/artifacts path."""
+    facts = {f.name: f for f in [FactDef(name="url", value="http://api:8000")]}
+    artifacts = {
+        "echo": TopologyArtifactDef(
+            id="echo",
+            kind="pcap",
+            filename="DICOM_C-ECHO-echoscu.pcap",
+            url="https://example.invalid/echo.pcap",
+        )
+    }
+    out = resolve_argv(
+        ["tcpreplay", "-i", "eth0", ArgvArtifactRef(artifact="echo")],
+        facts,
+        artifacts_by_id=artifacts,
+        allowed_artifact_ids={"echo"},
+    )
+    assert out == ["tcpreplay", "-i", "eth0", "/opt/artifacts/DICOM_C-ECHO-echoscu.pcap"]
+
+
+def test_resolve_argv_rejects_ungranted_artifact() -> None:
+    """resolve_argv raises when command references artifact not granted to node."""
+    facts = {}
+    artifacts = {
+        "echo": TopologyArtifactDef(
+            id="echo",
+            kind="pcap",
+            filename="DICOM_C-ECHO-echoscu.pcap",
+            url="https://example.invalid/echo.pcap",
+        )
+    }
+    with pytest.raises(ValueError, match="not granted"):
+        resolve_argv(
+            [ArgvArtifactRef(artifact="echo")],
+            facts,
+            artifacts_by_id=artifacts,
+            allowed_artifact_ids=set(),
+            command_id="replay",
+            node_id="replay",
+        )
 
 
 def test_resolve_argv_raises_on_unknown_fact() -> None:

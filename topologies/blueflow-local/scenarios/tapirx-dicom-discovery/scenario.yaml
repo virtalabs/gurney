@@ -1,11 +1,9 @@
-# OBJ-2 TapirX DICOM Discovery Verification (DSL v2)
-# Two TapirX: one reads pcap file, one listens on eth0 and receives replayed pcap via replay sidecar.
-name: tapirx-dicom-discovery
+# OBJ-2 TapirX DICOM Discovery Verification 
+# This scenario is used to verify that TapirX can discover DICOM assets from a pcap file.
+name: tapirx-dicom-pcap-replay
 topology: topologies/blueflow-local/topology.yaml
 
 facts:
-  - name: pcap_file
-    value: /pcap/DICOM_C-ECHO-echoscu.pcap
   - name: assets_url
     value: http://blueflow:8000/api/assets/
   - name: blueflow_api_env
@@ -41,6 +39,8 @@ nodes:
   - id: replay
     build: run
     span: tapirx
+    artifacts:
+      - dicom_echo_sample
 
 commands:
   - id: verify-assets-url
@@ -59,7 +59,6 @@ commands:
     node: tapirx
     run:
       detached: true
-      # Full command: tapirx plus args (run via exec in tapirx-live container).
       argv:
         - tapirx
         - -iface
@@ -79,7 +78,7 @@ commands:
         - tcpreplay
         - -i
         - eth0
-        - { fact: pcap_file }
+        - { artifact: dicom_echo_sample }
     retry:
       attempts: 2
       delay_s: 2

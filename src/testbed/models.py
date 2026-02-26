@@ -3,11 +3,13 @@
 import ipaddress
 from typing import Any, Literal
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, ConfigDict, model_validator
 
 
 class HealthCheck(BaseModel):
     """Docker health check configuration."""
+
+    model_config = ConfigDict(extra="forbid")
 
     test: list[str]
     interval_s: int = 10
@@ -18,6 +20,8 @@ class HealthCheck(BaseModel):
 class NetworkDef(BaseModel):
     """Network definition in the topology."""
 
+    model_config = ConfigDict(extra="forbid")
+
     name: str
     cidr: str
     vlan_id: int | None = None
@@ -25,6 +29,8 @@ class NetworkDef(BaseModel):
 
 class NodeDef(BaseModel):
     """Docker node definition in the topology."""
+
+    model_config = ConfigDict(extra="forbid")
 
     name: str
     kind: Literal["docker"]
@@ -38,6 +44,18 @@ class NodeDef(BaseModel):
     healthcheck: HealthCheck | None = None
     volumes: list[str] = []
     cap_add: list[str] = []
+
+
+class TopologyArtifactDef(BaseModel):
+    """Topology-scoped artifact catalog entry."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    kind: Literal["pcap"]
+    filename: str
+    url: str
+    sha256: str | None = None
 
 
 def _validate_unique_node_names(nodes: list[NodeDef]) -> None:
@@ -115,7 +133,10 @@ def _validate_no_duplicate_ips(nodes: list[NodeDef]) -> None:
 class TopologyConfig(BaseModel):
     """Full topology configuration from testbed.yaml."""
 
+    model_config = ConfigDict(extra="forbid")
+
     networks: list[NetworkDef]
+    artifacts: list[TopologyArtifactDef] = []
     nodes: list[NodeDef]
 
     @model_validator(mode="after")
@@ -124,9 +145,12 @@ class TopologyConfig(BaseModel):
         network_names = {n.name for n in self.networks}
         node_names = {n.name for n in self.nodes}
         network_by_name = {n.name: n for n in self.networks}
+        artifact_ids = [a.id for a in self.artifacts]
 
         _validate_unique_node_names(self.nodes)
         _validate_no_duplicate_ips(self.nodes)
+        if len(artifact_ids) != len(set(artifact_ids)):
+            raise ValueError("artifacts[].id must be unique")
 
         for node in self.nodes:
             _validate_node_network_ref(node, network_names)
@@ -140,6 +164,8 @@ class TopologyConfig(BaseModel):
 class FactDef(BaseModel):
     """Global fact: name and value (scalar or map for env_from_fact)."""
 
+    model_config = ConfigDict(extra="forbid")
+
     name: str
     value: str | dict[str, Any]
 
@@ -147,17 +173,30 @@ class FactDef(BaseModel):
 class ArgvFactRef(BaseModel):
     """Explicit fact reference in command argv: { fact: <fact-key> }."""
 
+    model_config = ConfigDict(extra="forbid")
+
     fact: str
+
+
+class ArgvArtifactRef(BaseModel):
+    """Explicit artifact reference in command argv: { artifact: <artifact-id> }."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    artifact: str
 
 
 class ScenarioNodeDef(BaseModel):
     """Scenario node: ordered build step with network attachment or span."""
+
+    model_config = ConfigDict(extra="forbid")
 
     id: str
     build: Literal["up", "run"]
     networks: list[str] | None = None
     span: str | None = None  # listener node id; mutually exclusive with networks
     env_from_fact: str | None = None
+    artifacts: list[str] = []
 
     @model_validator(mode="after")
     def span_xor_networks(self) -> "ScenarioNodeDef":
@@ -168,6 +207,8 @@ class ScenarioNodeDef(BaseModel):
 
 class RetryConfig(BaseModel):
     """Retry policy for a command."""
+
+    model_config = ConfigDict(extra="forbid")
 
     attempts: int = 1
     delay_s: float = 0.0
@@ -184,12 +225,16 @@ class RetryConfig(BaseModel):
 class CommandRunDef(BaseModel):
     """Command run: argv with optional { fact: key } items."""
 
-    argv: list[str | ArgvFactRef]
+    model_config = ConfigDict(extra="forbid")
+
+    argv: list[str | ArgvFactRef | ArgvArtifactRef]
     detached: bool = False
 
 
 class CommandDef(BaseModel):
     """Scenario command: bound to a node with retry policy."""
+
+    model_config = ConfigDict(extra="forbid")
 
     id: str
     node: str
@@ -225,7 +270,9 @@ def _validate_commands_reference_nodes(
             )
 
 
-def _collect_fact_refs_from_argv(argv: list[str | ArgvFactRef]) -> set[str]:
+def _collect_fact_refs_from_argv(
+    argv: list[str | ArgvFactRef | ArgvArtifactRef],
+) -> set[str]:
     refs: set[str] = set()
     for item in argv:
         if isinstance(item, ArgvFactRef):
@@ -263,14 +310,21 @@ def _validate_env_from_fact_resolves_to_map(
 
 
 def resolve_argv(
-    argv: list[str | ArgvFactRef], facts_by_name: dict[str, FactDef]
+    argv: list[str | ArgvFactRef | ArgvArtifactRef],
+    facts_by_name: dict[str, FactDef],
+    artifacts_by_id: dict[str, TopologyArtifactDef] | None = None,
+    allowed_artifact_ids: set[str] | None = None,
+    *,
+    command_id: str | None = None,
+    node_id: str | None = None,
 ) -> list[str]:
     """Resolve argv: substitute each ArgvFactRef with the fact's value (must be scalar)."""
     result: list[str] = []
+    artifacts = artifacts_by_id or {}
     for item in argv:
         if isinstance(item, str):
             result.append(item)
-        else:
+        elif isinstance(item, ArgvFactRef):
             if item.fact not in facts_by_name:
                 raise ValueError(f"unknown fact in argv: {item.fact!r}")
             val = facts_by_name[item.fact].value
@@ -279,11 +333,28 @@ def resolve_argv(
                     f"fact {item.fact!r} used in argv must have scalar value"
                 )
             result.append(str(val))
+        else:
+            if item.artifact not in artifacts:
+                raise ValueError(f"unknown artifact in argv: {item.artifact!r}")
+            if (
+                allowed_artifact_ids is not None
+                and item.artifact not in allowed_artifact_ids
+            ):
+                cmd_part = f"command {command_id!r} " if command_id else ""
+                node_part = f"node {node_id!r} " if node_id else ""
+                raise ValueError(
+                    f"{cmd_part}{node_part}references artifact {item.artifact!r} "
+                    "but it is not granted in scenario nodes[].artifacts"
+                )
+            artifact = artifacts[item.artifact]
+            result.append(f"/opt/artifacts/{artifact.filename}")
     return result
 
 
 class ScenarioConfig(BaseModel):
     """Scenario configuration from scenario.yaml."""
+
+    model_config = ConfigDict(extra="forbid")
 
     name: str
     topology: str = "testbed.yaml"

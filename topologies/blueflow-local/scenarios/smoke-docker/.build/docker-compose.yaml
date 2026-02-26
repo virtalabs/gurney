@@ -102,6 +102,8 @@
     "depends_on":
       "blueflow":
         "condition": "service_healthy"
+    "cap_add":
+    - "NET_ADMIN"
   "pacs-server":
     "image": "orthancteam/orthanc:25.12.3"
     "labels":

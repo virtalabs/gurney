@@ -3,6 +3,13 @@ networks:
   - name: clinical-vlan
     cidr: 192.168.10.0/24
 
+artifacts:
+  - id: dicom_echo_sample
+    kind: pcap
+    filename: DICOM_C-ECHO-echoscu.pcap
+    url: https://wiki.wireshark.org/uploads/__moin_import__/attachments/SampleCaptures/DICOM_C-ECHO-echoscu.pcap
+    sha256: null
+
 nodes:
   - name: postgres
     kind: docker
@@ -32,7 +39,7 @@ nodes:
 
   - name: blueflow
     kind: docker
-    image: ${BLUEFLOW_IMAGE:-virtalabsinc/blueflow:testbed-3.0.0}
+    image: virtalabsinc/blueflow:testbed-3.0.1
     network: clinical-vlan
     ip: 192.168.10.4
     ports: [8000]
@@ -50,7 +57,7 @@ nodes:
 
   - name: celery-worker
     kind: docker
-    image: ${BLUEFLOW_IMAGE:-virtalabsinc/blueflow:testbed-3.0.1}
+    image: virtalabsinc/blueflow:testbed-3.0.1
     network: clinical-vlan
     ip: 192.168.10.5
     depends_on: [postgres, redis, blueflow]
@@ -78,8 +85,6 @@ nodes:
     network: clinical-vlan
     ip: 192.168.10.7
     depends_on: [tapirx]
-    volumes:
-      - "${PWD}/var/artifacts/pcap:/pcap:ro"
 
   - name: pacs-server
     kind: docker

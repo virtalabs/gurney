@@ -1,16 +1,21 @@
 """Typer CLI: run, list, teardown."""
 
+import json
 import logging
+import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import typer
 from rich.console import Console
 from rich.padding import Padding
 from rich.panel import Panel
 from rich.syntax import Syntax
+from rich.text import Text
 
 from testbed.compose import force_cleanup
-from testbed.console import UIMode, should_use_color, use_live_ui
+from testbed.console import should_use_color, use_live_ui
 from testbed.format_output import (
     format_argv_for_display,
     format_command_output,
@@ -30,6 +35,7 @@ DEFAULT_OUTPUT_MAX_LINE = 120
 ANSI_RESET = "\033[0m"
 ANSI_GREEN = "\033[32m"
 ANSI_RED = "\033[31m"
+CTX_JSON_KEY = "json_output"
 
 
 def _configure_logging() -> None:
@@ -180,18 +186,17 @@ def _echo_verbose_layers(result: RunResult, use_color: bool = False) -> None:
     typer.echo(f"PASS {result.scenario} ({result.duration_s:.1f}s)")
 
 
-def _resolve_scenario_dir(project_root: Path, scenario: str) -> Path | None:
+def _resolve_scenario_dir(project_root: Path, scenario: str) -> Path:
     """Resolve scenario ref to scenario directory via topology index."""
     try:
         index, _ = get_or_build_index(project_root)
     except ValueError as exc:
-        typer.echo(str(exc), err=True)
-        raise typer.Exit(1) from exc
+        raise RuntimeError(str(exc)) from exc
     for topology in index.topologies:
         for entry in topology.scenarios:
             if entry.ref == scenario:
                 return project_root / Path(entry.path).parent
-    return None
+    raise RuntimeError(f"Scenario not found: {scenario}")
 
 
 def _resolve_topology_id(project_root: Path, target: str) -> str:
@@ -201,27 +206,24 @@ def _resolve_topology_id(project_root: Path, target: str) -> str:
         try:
             index, _ = get_or_build_index(project_root)
         except ValueError as exc:
-            typer.echo(str(exc), err=True)
-            raise typer.Exit(1) from exc
+            raise RuntimeError(str(exc)) from exc
         for topology in index.topologies:
             for entry in topology.scenarios:
                 if entry.ref == scenario:
                     return topology.id
-        typer.echo(f"Scenario not found: {scenario}", err=True)
-        raise typer.Exit(1)
+        raise RuntimeError(f"Scenario not found: {scenario}")
     topology_id = target
     topology_path = project_root / "topologies" / topology_id / "topology.yaml"
     if not topology_path.exists():
-        typer.echo(f"Topology not found: {topology_id}", err=True)
-        raise typer.Exit(1)
+        raise RuntimeError(f"Topology not found: {topology_id}")
     return topology_id
 
 
 def _emit_run_output(
-    result: RunResult, *, ui: UIMode, verbose: bool, use_color: bool
+    result: RunResult, *, live_used: bool, verbose: bool, use_color: bool
 ) -> None:
     """Emit run output for live or classic mode."""
-    if use_live_ui(ui):
+    if live_used:
         return  # live UI already printed output
     should_show_verbose = verbose and result.passed and (
         result.compose_up_stdout is not None
@@ -235,19 +237,64 @@ def _emit_run_output(
     _echo_default_output(result, use_color=use_color)
 
 
+def _ts_utc() -> str:
+    return datetime.now(tz=timezone.utc).isoformat()
+
+
+def _resolve_json_mode(ctx: typer.Context, command_json_output: bool) -> bool:
+    root_json_output = bool((ctx.obj or {}).get(CTX_JSON_KEY, False))
+    if root_json_output and command_json_output:
+        raise typer.BadParameter(
+            "Do not pass --json twice; use either root-level or command-level form."
+        )
+    return root_json_output or command_json_output
+
+
+def _emit_ndjson(command: str, event: str, payload: dict[str, Any] | None = None) -> None:
+    envelope: dict[str, Any] = {"event": event, "command": command, "ts": _ts_utc()}
+    if payload is not None:
+        envelope["payload"] = payload
+    typer.echo(json.dumps(envelope, separators=(",", ":")))
+
+
+def _render_list_human(use_color: bool, topology_rows: list[tuple[str, list[str]]]) -> None:
+    if not use_color:
+        typer.echo("Available scenarios:")
+        for topology_id, scenario_refs in topology_rows:
+            typer.echo(f"\n{topology_id}")
+            for scenario_ref in scenario_refs:
+                typer.echo(f"  - {scenario_ref}")
+        return
+
+    header = Text("VirtaLabs Testbed  •  Available scenarios", style="bold red")
+    Console().print(Panel(header, border_style="blue", padding=(0, 1), expand=False))
+    for topology_id, scenario_refs in topology_rows:
+        typer.echo(f"  topology {topology_id}")
+        for scenario_ref in scenario_refs:
+            typer.echo(f"    - {scenario_ref}")
+        typer.echo("")
+
+
 app = typer.Typer(
     context_settings={"help_option_names": ["-h", "--help"]},
 )
 
 
 @app.callback()
-def _main() -> None:
+def _main(
+    ctx: typer.Context,
+    json_output: bool = typer.Option(
+        False, "--json", help="Emit newline-delimited JSON (NDJSON) events."
+    ),
+) -> None:
     """Configure logging before any command."""
     _configure_logging()
+    ctx.obj = {CTX_JSON_KEY: json_output}
 
 
 @app.command()
 def run(
+    ctx: typer.Context,
     scenario: str = typer.Argument(
         ..., help="Scenario ref as <topology-id>/<scenario-id>"
     ),
@@ -258,29 +305,65 @@ def run(
         "-v",
         help="Show Docker and container output after a successful run",
     ),
-    ui: UIMode = typer.Option(
-        "live",
-        "--ui",
-        help="Output style: live (banner, progress, streamed) or classic (plain).",
-    ),
     no_color: bool = typer.Option(
         False,
         "--no-color",
         help="Disable colored output (also respects NO_COLOR env).",
     ),
+    json_output: bool = typer.Option(
+        False, "--json", help="Emit newline-delimited JSON (NDJSON) events."
+    ),
 ) -> None:
     """Run a scenario: topology up, health checks, teardown."""
     project_root = Path.cwd()
-    scenario_dir = _resolve_scenario_dir(project_root, scenario)
-
-    if scenario_dir is None or not scenario_dir.is_dir():
-        typer.echo(f"Scenario not found: {scenario}", err=True)
+    json_mode = _resolve_json_mode(ctx, json_output)
+    try:
+        scenario_dir = _resolve_scenario_dir(project_root, scenario)
+    except RuntimeError as exc:
+        if json_mode:
+            _emit_ndjson("run", "failed", {"scenario": scenario, "error": str(exc)})
+        else:
+            typer.echo(str(exc), err=True)
         logger.error("Scenario not found: %s", scenario)
+        raise typer.Exit(1) from exc
+
+    if not scenario_dir.is_dir():
+        message = f"Scenario directory not found: {scenario_dir}"
+        if json_mode:
+            _emit_ndjson("run", "failed", {"scenario": scenario, "error": message})
+        else:
+            typer.echo(message, err=True)
         raise typer.Exit(1)
 
     use_color = should_use_color(no_color)
     logger.info("Running scenario %s", scenario)
-    if use_live_ui(ui):
+    live_used = use_live_ui() and not json_mode
+
+    if json_mode:
+        _emit_ndjson("run", "started", {"scenario": scenario, "keep": keep})
+        run_failed = False
+
+        def _run_event_handler(event: Any) -> None:
+            _emit_ndjson("run", event.kind, dict(event.payload))
+
+        result = run_scenario(
+            scenario_dir,
+            keep=keep,
+            verbose=verbose,
+            project_root=project_root,
+            event_handler=_run_event_handler,
+        )
+        terminal_event = "completed" if result.passed else "failed"
+        terminal_payload = {
+            "scenario": result.scenario,
+            "duration_s": result.duration_s,
+            "passed": result.passed,
+        }
+        if result.error:
+            terminal_payload["error"] = result.error
+        _emit_ndjson("run", terminal_event, terminal_payload)
+        run_failed = not result.passed
+    elif live_used:
         result = run_with_live_ui(
             scenario_dir,
             keep=keep,
@@ -288,6 +371,7 @@ def run(
             project_root=project_root,
             use_color=use_color,
         )
+        run_failed = not result.passed
     else:
         result = run_scenario(
             scenario_dir,
@@ -295,7 +379,15 @@ def run(
             verbose=verbose,
             project_root=project_root,
         )
-    _emit_run_output(result, ui=ui, verbose=verbose, use_color=use_color)
+        run_failed = not result.passed
+
+    if not json_mode:
+        _emit_run_output(
+            result,
+            live_used=live_used,
+            verbose=verbose,
+            use_color=use_color,
+        )
     if result.passed:
         logger.info("PASS %s (%.1fs)", result.scenario, result.duration_s)
     else:
@@ -305,47 +397,110 @@ def run(
             result.duration_s,
             result.error or "",
         )
-    if not result.passed:
+    if run_failed:
         raise typer.Exit(1)
 
 
 @app.command(name="list")
-def list_scenarios() -> None:
+def list_scenarios(
+    ctx: typer.Context,
+    json_output: bool = typer.Option(
+        False, "--json", help="Emit newline-delimited JSON (NDJSON) events."
+    ),
+) -> None:
     """List available scenarios grouped by topology."""
     project_root = Path.cwd()
+    json_mode = _resolve_json_mode(ctx, json_output)
     try:
         index, _ = get_or_build_index(project_root)
     except ValueError as exc:
+        if json_mode:
+            _emit_ndjson("list", "failed", {"error": str(exc)})
+            raise typer.Exit(1) from exc
         typer.echo(str(exc), err=True)
         raise typer.Exit(1)
 
-    typer.echo("Available scenarios:")
-    for topology in index.topologies:
-        typer.echo(f"\n{topology.id}")
-        for scenario in topology.scenarios:
-            typer.echo(f"  - {scenario.ref}")
+    topology_rows = [
+        (topology.id, [scenario.ref for scenario in topology.scenarios])
+        for topology in index.topologies
+    ]
+    if json_mode:
+        _emit_ndjson("list", "started")
+        for topology_id, scenario_refs in topology_rows:
+            _emit_ndjson(
+                "list",
+                "topology",
+                {"topology_id": topology_id, "scenarios": scenario_refs},
+            )
+        _emit_ndjson(
+            "list",
+            "completed",
+            {
+                "topology_count": len(topology_rows),
+                "scenario_count": sum(len(row[1]) for row in topology_rows),
+            },
+        )
+        return
+
+    _render_list_human(should_use_color(False), topology_rows)
 
 
 @app.command()
 def pull(
+    ctx: typer.Context,
     target: str = typer.Argument(
         ..., help="Topology id or scenario ref (<topology-id>/<scenario-id>)"
+    ),
+    json_output: bool = typer.Option(
+        False, "--json", help="Emit newline-delimited JSON (NDJSON) events."
     ),
 ) -> None:
     """Pull/build/verify reproducibility assets for a selected topology config."""
     project_root = Path.cwd()
-    topology_id = _resolve_topology_id(project_root, target)
+    json_mode = _resolve_json_mode(ctx, json_output)
     try:
-        pull_and_verify(topology_id)
+        topology_id = _resolve_topology_id(project_root, target)
     except RuntimeError as exc:
+        if json_mode:
+            _emit_ndjson("pull", "failed", {"error": str(exc)})
+        else:
+            typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from exc
+    try:
+        if json_mode:
+            _emit_ndjson("pull", "started", {"target": target, "topology_id": topology_id})
+
+            def _pull_reporter(event: str, payload: dict[str, Any]) -> None:
+                _emit_ndjson("pull", event, payload)
+
+            pull_and_verify(topology_id, reporter=_pull_reporter, emit_text=False)
+            _emit_ndjson("pull", "completed", {"topology_id": topology_id})
+            return
+
+        pull_and_verify(topology_id)
+    except (RuntimeError, subprocess.CalledProcessError) as exc:
+        if json_mode:
+            _emit_ndjson("pull", "failed", {"error": str(exc), "topology_id": topology_id})
+            raise typer.Exit(1) from exc
         typer.echo(str(exc), err=True)
         raise typer.Exit(1) from exc
 
 
 @app.command()
-def teardown() -> None:
+def teardown(
+    ctx: typer.Context,
+    json_output: bool = typer.Option(
+        False, "--json", help="Emit newline-delimited JSON (NDJSON) events."
+    ),
+) -> None:
     """Force-remove all testbed-managed Docker resources."""
+    json_mode = _resolve_json_mode(ctx, json_output)
+    if json_mode:
+        _emit_ndjson("teardown", "started")
     force_cleanup()
+    if json_mode:
+        _emit_ndjson("teardown", "completed")
+        return
     typer.echo("Teardown complete.")
 
 

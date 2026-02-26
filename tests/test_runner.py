@@ -135,6 +135,47 @@ def test_compose_generation_with_span() -> None:
         assert "network_mode" not in tapirx_svc
 
 
+def test_compose_generation_mounts_artifacts_for_granted_nodes() -> None:
+    """Nodes with scenario artifact grants get /opt/artifacts mount."""
+    top = TopologyConfig(
+        networks=[NetworkDef(name="net1", cidr="192.168.10.0/24")],
+        nodes=[
+            NodeDef(
+                name="replay",
+                kind="docker",
+                image="replay:local",
+                network="net1",
+                ip="192.168.10.2",
+            ),
+            NodeDef(
+                name="tapirx",
+                kind="docker",
+                image="tapirx:local",
+                network="net1",
+                ip="192.168.10.3",
+            ),
+        ],
+    )
+    scenario_nodes = [
+        ScenarioNodeDef(
+            id="replay",
+            build="run",
+            networks=["net1"],
+            artifacts=["dicom_echo_sample"],
+        ),
+        ScenarioNodeDef(id="tapirx", build="up", networks=["net1"]),
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp)
+        generate_compose(top, out, scenario_nodes=scenario_nodes, check_urls=[])
+        with open(out / "docker-compose.yaml") as f:
+            data = yaml.safe_load(f)
+        replay_vols = data["services"]["replay"].get("volumes", [])
+        tapirx_vols = data["services"]["tapirx"].get("volumes", [])
+        assert "${PWD}/var/artifacts:/opt/artifacts:ro" in replay_vols
+        assert "${PWD}/var/artifacts:/opt/artifacts:ro" not in tapirx_vols
+
+
 def test_compose_generation_command_as_list() -> None:
     """Compose generation emits command as list of words so container receives multiple argv."""
     top = TopologyConfig(
@@ -967,7 +1008,7 @@ def test_teardown_no_orphans() -> None:
 
 
 def test_run_scenario_stages_fixture_pcap_into_runtime_cache(tmp_path: Path) -> None:
-    """Scenario /pcap references stage topology fixture into var/artifacts before compose run."""
+    """Scenario artifact refs stage topology fixture into var/artifacts before compose run."""
     topology_dir = tmp_path / "topologies" / "demo"
     scenario_dir = topology_dir / "scenarios" / "pcap-scenario"
     fixture_path = topology_dir / "fixtures" / "pcap" / "sample.pcap"
@@ -980,6 +1021,11 @@ def test_run_scenario_stages_fixture_pcap_into_runtime_cache(tmp_path: Path) -> 
         "networks:\n"
         "  - name: net1\n"
         "    cidr: 192.168.10.0/24\n"
+        "artifacts:\n"
+        "  - id: sample_artifact\n"
+        "    kind: pcap\n"
+        "    filename: sample.pcap\n"
+        "    url: https://example.invalid/sample.pcap\n"
         "nodes:\n"
         "  - name: replay\n"
         "    kind: docker\n"
@@ -998,11 +1044,12 @@ def test_run_scenario_stages_fixture_pcap_into_runtime_cache(tmp_path: Path) -> 
         "  - id: replay\n"
         "    build: run\n"
         "    networks: [net1]\n"
+        "    artifacts: [sample_artifact]\n"
         "commands:\n"
         "  - id: replay-one\n"
         "    node: replay\n"
         "    run:\n"
-        "      argv: [tcpreplay, -i, eth0, /pcap/sample.pcap]\n"
+        "      argv: [tcpreplay, -i, eth0, {artifact: sample_artifact}]\n"
         "    retry:\n"
         "      attempts: 1\n"
         "      delay_s: 0\n",
@@ -1021,13 +1068,13 @@ def test_run_scenario_stages_fixture_pcap_into_runtime_cache(tmp_path: Path) -> 
         result = run_scenario(scenario_dir, project_root=tmp_path)
 
     assert result.passed is True
-    cache_path = tmp_path / "var" / "artifacts" / "pcap" / "sample.pcap"
+    cache_path = tmp_path / "var" / "artifacts" / "sample.pcap"
     assert cache_path.exists()
     assert cache_path.read_bytes() == b"fixture-bytes"
 
 
 def test_run_scenario_missing_pcap_shows_actionable_error(tmp_path: Path) -> None:
-    """Missing /pcap artifact fails fast with fixture/cache guidance."""
+    """Missing artifact ref fails fast with fixture/cache guidance."""
     topology_dir = tmp_path / "topologies" / "demo"
     scenario_dir = topology_dir / "scenarios" / "pcap-scenario"
 
@@ -1037,6 +1084,11 @@ def test_run_scenario_missing_pcap_shows_actionable_error(tmp_path: Path) -> Non
         "networks:\n"
         "  - name: net1\n"
         "    cidr: 192.168.10.0/24\n"
+        "artifacts:\n"
+        "  - id: missing_artifact\n"
+        "    kind: pcap\n"
+        "    filename: missing.pcap\n"
+        "    url: https://example.invalid/missing.pcap\n"
         "nodes:\n"
         "  - name: replay\n"
         "    kind: docker\n"
@@ -1055,11 +1107,12 @@ def test_run_scenario_missing_pcap_shows_actionable_error(tmp_path: Path) -> Non
         "  - id: replay\n"
         "    build: run\n"
         "    networks: [net1]\n"
+        "    artifacts: [missing_artifact]\n"
         "commands:\n"
         "  - id: replay-one\n"
         "    node: replay\n"
         "    run:\n"
-        "      argv: [tcpreplay, -i, eth0, /pcap/missing.pcap]\n"
+        "      argv: [tcpreplay, -i, eth0, {artifact: missing_artifact}]\n"
         "    retry:\n"
         "      attempts: 1\n"
         "      delay_s: 0\n",
@@ -1069,7 +1122,88 @@ def test_run_scenario_missing_pcap_shows_actionable_error(tmp_path: Path) -> Non
     with pytest.raises(RuntimeError) as exc:
         run_scenario(scenario_dir, project_root=tmp_path)
     msg = str(exc.value)
-    assert "Missing required pcap artifact" in msg
+    assert "Missing required artifact" in msg
+    assert "artifact id: missing_artifact" in msg
     assert "topologies/demo/fixtures/pcap/missing.pcap" in msg
-    assert "var/artifacts/pcap/missing.pcap" in msg
+    assert "var/artifacts/missing.pcap" in msg
     assert "run `make pull`" in msg
+
+
+def test_run_scenario_rejects_ungranted_artifact_ref(tmp_path: Path) -> None:
+    """Command artifact ref must be declared in scenario node artifacts grant list."""
+    topology_dir = tmp_path / "topologies" / "demo"
+    scenario_dir = topology_dir / "scenarios" / "artifact-scenario"
+    topology_dir.mkdir(parents=True, exist_ok=True)
+
+    (topology_dir / "topology.yaml").write_text(
+        "networks:\n"
+        "  - name: net1\n"
+        "    cidr: 192.168.10.0/24\n"
+        "artifacts:\n"
+        "  - id: sample_artifact\n"
+        "    kind: pcap\n"
+        "    filename: sample.pcap\n"
+        "    url: https://example.invalid/sample.pcap\n"
+        "nodes:\n"
+        "  - name: replay\n"
+        "    kind: docker\n"
+        "    image: replay:local\n"
+        "    network: net1\n"
+        "    ip: 192.168.10.2\n",
+        encoding="utf-8",
+    )
+    scenario_dir.mkdir(parents=True, exist_ok=True)
+    (scenario_dir / "scenario.yaml").write_text(
+        "name: artifact-scenario\n"
+        "topology: topologies/demo/topology.yaml\n"
+        "nodes:\n"
+        "  - id: replay\n"
+        "    build: run\n"
+        "    networks: [net1]\n"
+        "commands:\n"
+        "  - id: replay-one\n"
+        "    node: replay\n"
+        "    run:\n"
+        "      argv: [tcpreplay, -i, eth0, {artifact: sample_artifact}]\n"
+        "    retry:\n"
+        "      attempts: 1\n"
+        "      delay_s: 0\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="not granted"):
+        run_scenario(scenario_dir, project_root=tmp_path)
+
+
+def test_run_scenario_rejects_unknown_node_artifact_grant(tmp_path: Path) -> None:
+    """Scenario node artifact grants must reference topology artifact IDs."""
+    topology_dir = tmp_path / "topologies" / "demo"
+    scenario_dir = topology_dir / "scenarios" / "artifact-scenario"
+    topology_dir.mkdir(parents=True, exist_ok=True)
+
+    (topology_dir / "topology.yaml").write_text(
+        "networks:\n"
+        "  - name: net1\n"
+        "    cidr: 192.168.10.0/24\n"
+        "artifacts: []\n"
+        "nodes:\n"
+        "  - name: replay\n"
+        "    kind: docker\n"
+        "    image: replay:local\n"
+        "    network: net1\n"
+        "    ip: 192.168.10.2\n",
+        encoding="utf-8",
+    )
+    scenario_dir.mkdir(parents=True, exist_ok=True)
+    (scenario_dir / "scenario.yaml").write_text(
+        "name: artifact-scenario\n"
+        "topology: topologies/demo/topology.yaml\n"
+        "nodes:\n"
+        "  - id: replay\n"
+        "    build: run\n"
+        "    networks: [net1]\n"
+        "    artifacts: [missing_artifact]\n"
+        "commands: []\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="unknown artifact"):
+        run_scenario(scenario_dir, project_root=tmp_path)
