@@ -1,5 +1,5 @@
 name: smoke-docker
-topology: testbed.yaml
+topology: topologies/blueflow-local/topology.yaml
 
 facts: []
 

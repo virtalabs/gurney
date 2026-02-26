@@ -1,7 +1,7 @@
 # OBJ-2 TapirX DICOM Discovery Verification (DSL v2)
 # Two TapirX: one reads pcap file, one listens on eth0 and receives replayed pcap via replay sidecar.
 name: tapirx-dicom-discovery
-topology: testbed.yaml
+topology: topologies/blueflow-local/topology.yaml
 
 facts:
   - name: pcap_file
@@ -54,7 +54,7 @@ commands:
     retry:
       attempts: 8
       delay_s: 2
-  
+
   - id: passive-discovery
     node: tapirx
     run:
@@ -64,7 +64,7 @@ commands:
         - tapirx
         - -iface
         - eth0
-        - -apiurl 
+        - -apiurl
         - { fact: assets_url }
         - -limit
         - "25"
@@ -83,7 +83,7 @@ commands:
     retry:
       attempts: 2
       delay_s: 2
- 
+
   - id: get-assets
     node: replay
     run:

@@ -1,0 +1,130 @@
+name: small-clinic
+topology: topologies/blueflow-local/topology.yaml
+
+facts:
+  - name: assets_url
+    value: http://blueflow:8000/api/assets/1/
+  - name: upsert_url
+    value: http://blueflow:8000/api/assets/upsert/
+  - name: asset_tags_url
+    value: http://blueflow:8000/api/assets/1/tags/
+  - name: blueflow_api_env
+    value:
+      DJANGO_ALLOWED_HOSTS: blueflow,localhost,127.0.0.1
+      DEFAULT_USERNAME: admin
+      DEFAULT_PASSWORD: admin
+      DJANGO_DEBUG: true
+      DJANGO_SETTINGS_MODULE: project.settings.development
+      DATABASE_URL: postgresql://blueflow:testbed@192.168.10.2:5432/blueflow
+      REDIS_URL: redis://192.168.10.3:6379/0
+      SECRET_KEY: testbed-only-not-for-production
+      CELERY_TASK_ALWAYS_EAGER: "true"
+
+nodes:
+  - id: postgres
+    build: up
+    networks: [clinical-vlan]
+
+  - id: redis
+    build: up
+    networks: [clinical-vlan]
+
+  - id: blueflow
+    build: up
+    networks: [clinical-vlan]
+    env_from_fact: blueflow_api_env
+
+  - id: tapirx
+    build: up
+    networks: [clinical-vlan]
+
+  - id: pacs-server
+    build: up
+    networks: [clinical-vlan]
+
+  - id: orthanc-sender
+    build: up
+    span: tapirx
+
+  - id: meddream
+    build: up
+    networks: [clinical-vlan]
+
+  - id: replay
+    build: run
+    span: tapirx
+
+commands:
+
+  - id: emulate-tap-device
+    node: tapirx
+    run:
+      argv:
+        - sh
+        - -lc
+        - |
+          ip tuntap add dev tap0 mode tap 2>/dev/null || true
+          ip link set tap0 up 2>/dev/null || true
+          ip addr add 172.30.0.2/24 dev tap0 2>/dev/null || true
+          ip -o link show tap0 2>/dev/null || true
+    retry:
+      attempts: 1
+      delay_s: 1
+
+  - id: passive-discovery
+    node: tapirx
+    run:
+      detached: true
+      argv:
+        - tapirx
+        - -iface
+        - eth0
+        - -verbose
+        - -apiurl
+        - { fact: upsert_url }
+        - -limit
+        - "25"
+    retry:
+      attempts: 2
+      delay_s: 1
+
+  - id: orthanc-push-to-dicom-listener
+    node: replay
+    run:
+      argv:
+        - sh
+        - -lc
+        - |
+          set -eu
+          curl -sS -u orthanc:orthanc \
+            -X PUT "http://localhost:8042/modalities/orthanc-listener" \
+            -H "Content-Type: application/json" \
+            -d '{"AET":"ORTHANC","Host":"pacs-server","Port":4242,"AllowEcho":true}'
+          i=0
+          while [ "$i" -lt 3 ]; do
+            curl -sS -u orthanc:orthanc -X POST "http://localhost:8042/modalities/orthanc-listener/echo"
+            i=$((i + 1))
+          done
+    retry:
+      attempts: 2
+      delay_s: 2
+
+  - id: get-assets
+    node: replay
+    run:
+      argv:
+        - curl
+        - { fact: assets_url }
+    retry:
+      attempts: 2
+      delay_s: 2
+ 
+  - id: get-asset-tags
+    node: replay
+    run:
+      argv:
+        - curl
+        - { fact: asset_tags_url }
+    retry:
+      attempts: 2
+      delay_s: 2

@@ -223,23 +223,36 @@ def _compose_ps_snapshot(compose_path: Path) -> dict:
     raw = (proc.stdout or "").strip()
     if not raw:
         return {"services": []}
+    services = _parse_ps_json_array(raw)
+    if services is None:
+        services = _parse_ps_json_lines(raw)
+    return {"services": services}
+
+
+def _normalize_ps_item(item: dict[str, object]) -> dict[str, object]:
+    """Map docker compose ps item keys to compact snapshot schema."""
+    return {
+        "service": item.get("Service"),
+        "state": item.get("State"),
+        "health": item.get("Health"),
+        "exit_code": item.get("ExitCode"),
+    }
+
+
+def _parse_ps_json_array(raw: str) -> list[dict[str, object]] | None:
+    """Parse array-shaped JSON output from compose ps; returns None when not array JSON."""
     try:
         parsed = json.loads(raw)
-        if isinstance(parsed, list):
-            services = [
-                {
-                    "service": item.get("Service"),
-                    "state": item.get("State"),
-                    "health": item.get("Health"),
-                    "exit_code": item.get("ExitCode"),
-                }
-                for item in parsed
-                if isinstance(item, dict)
-            ]
-            return {"services": services}
     except json.JSONDecodeError:
-        pass
-    services = []
+        return None
+    if not isinstance(parsed, list):
+        return None
+    return [_normalize_ps_item(item) for item in parsed if isinstance(item, dict)]
+
+
+def _parse_ps_json_lines(raw: str) -> list[dict[str, object]]:
+    """Parse line-delimited JSON records from compose ps output."""
+    services: list[dict[str, object]] = []
     for line in raw.splitlines():
         line = line.strip()
         if not line:
@@ -249,15 +262,8 @@ def _compose_ps_snapshot(compose_path: Path) -> dict:
         except json.JSONDecodeError:
             continue
         if isinstance(item, dict):
-            services.append(
-                {
-                    "service": item.get("Service"),
-                    "state": item.get("State"),
-                    "health": item.get("Health"),
-                    "exit_code": item.get("ExitCode"),
-                }
-            )
-    return {"services": services}
+            services.append(_normalize_ps_item(item))
+    return services
 
 
 def _service_logs_snapshot(compose_path: Path, service: str, tail: int = 120) -> str:
@@ -443,6 +449,61 @@ def _expand_image(image: str) -> str:
     return re.sub(r"\$\{([^:}]+):-([^}]*)\}", replacer, image)
 
 
+def _build_compose_run_cmd(
+    compose_path: Path,
+    service: str,
+    no_deps: bool = False,
+    command: list[str] | None = None,
+) -> list[str]:
+    """Build `docker compose run` command for one-off service execution."""
+    run_cmd = [
+        "docker",
+        "compose",
+        "-f",
+        str(compose_path),
+        "run",
+        "--rm",
+        "--quiet-pull",
+    ]
+    if no_deps:
+        run_cmd.append("--no-deps")
+    if command:
+        run_cmd.extend(["--entrypoint", ""])
+    run_cmd.append(service)
+    if command:
+        run_cmd.extend(command)
+    return run_cmd
+
+
+def _collect_run_failure_context(
+    compose_path: Path, service: str, stdout: str, stderr: str
+) -> dict[str, object]:
+    """Collect targeted debugging context for failed compose runs."""
+    context: dict[str, object] = {}
+    if service == "replay":
+        context["replay_failure"] = {
+            "stderr_full": stderr[:2000],
+            "stdout_full": stdout[:2000],
+        }
+    if service.startswith("check-"):
+        context["snapshot"] = _compose_ps_snapshot(compose_path)
+        context["blueflow_logs"] = _service_logs_snapshot(compose_path, "blueflow-api")
+        context["ip_snapshot"] = {
+            "postgres": _service_ip_snapshot(compose_path, "postgres"),
+            "blueflow_api": _service_ip_snapshot(compose_path, "blueflow-api"),
+        }
+    return context
+
+
+def _compose_run_error_message(stdout: str, stderr: str, returncode: int) -> str:
+    """Build normalized compose run error message from command output."""
+    parts = [s.strip() for s in (stderr, stdout) if s.strip()]
+    msg = "\n".join(parts) if parts else "unknown error"
+    if returncode == 22:
+        msg += " Curl exit 22 = HTTP 4xx/5xx (check endpoint and server)."
+    return msg
+
+
 def compose_up(
     compose_path: Path,
     verbose: bool = False,
@@ -478,55 +539,15 @@ def compose_run(
     no_deps: add --no-deps so Compose does not start/wait for dependencies (reduces stderr noise for checks).
     command: optional argv to run instead of service default (appended after service name).
     """
-    run_cmd = [
-        "docker",
-        "compose",
-        "-f",
-        str(compose_path),
-        "run",
-        "--rm",
-        "--quiet-pull",
-    ]
-    if no_deps:
-        run_cmd.append("--no-deps")
-    if command:
-        run_cmd.extend(["--entrypoint", ""])
-    run_cmd.append(service)
-    if command:
-        run_cmd.extend(command)
-
+    run_cmd = _build_compose_run_cmd(
+        compose_path, service, no_deps=no_deps, command=command
+    )
     stdout, stderr, returncode = _run_with_optional_stream(run_cmd, on_line)
     if returncode != 0:
-        replay_failure = (
-            {
-                "stderr_full": stderr[:2000],
-                "stdout_full": stdout[:2000],
-            }
-            if service == "replay"
-            else {}
-        )
-        snapshot = (
-            _compose_ps_snapshot(compose_path)
-            if service.startswith("check-")
-            else {"services": []}
-        )
-        blueflow_logs = (
-            _service_logs_snapshot(compose_path, "blueflow-api")
-            if service.startswith("check-")
-            else ""
-        )
-        ip_snapshot = (
-            {
-                "postgres": _service_ip_snapshot(compose_path, "postgres"),
-                "blueflow_api": _service_ip_snapshot(compose_path, "blueflow-api"),
-            }
-            if service.startswith("check-")
-            else {}
-        )
-        parts = [s.strip() for s in (stderr, stdout) if s.strip()]
-        msg = "\n".join(parts) if parts else "unknown error"
-        if returncode == 22:
-            msg += " Curl exit 22 = HTTP 4xx/5xx (check endpoint and server)."
+        context = _collect_run_failure_context(compose_path, service, stdout, stderr)
+        msg = _compose_run_error_message(stdout, stderr, returncode)
+        if context:
+            logger.debug("compose run failure context for %s: %s", service, context)
         logger.error("docker compose run %s failed: %s", service, msg[:500])
         raise RuntimeError(f"docker compose run {service} failed: {msg}")
     logger.debug("Compose run %s succeeded", service)
