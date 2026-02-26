@@ -1,6 +1,8 @@
 """Tests for live UI render helpers."""
 
 from rich.console import Group
+from rich.padding import Padding
+from rich.panel import Panel
 from rich.text import Text
 
 from testbed.live_ui import LiveState, _body_renderable
@@ -33,3 +35,9 @@ def test_body_renderable_color_returns_group() -> None:
     )
     rendered = _body_renderable(state)
     assert isinstance(rendered, Group)
+    panels = [
+        item.renderable
+        for item in rendered.renderables
+        if isinstance(item, Padding) and isinstance(item.renderable, Panel)
+    ]
+    assert panels, "Expected panelized command/output renderables in color mode"

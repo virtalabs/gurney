@@ -83,6 +83,13 @@ def _command_formatted_output(stdout: str, stderr: str) -> tuple[bool, str]:
     return _is_json_output(stdout, stderr)
 
 
+def _command_panel(argv_line: str) -> Padding:
+    """Render command line as a panel in live color mode."""
+    syntax = Syntax(f"$ {argv_line}", "bash", theme="monokai", indent_guides=False)
+    panel = Panel(syntax, border_style="cyan", padding=(0, 1), expand=False)
+    return Padding(panel, (0, 0, 0, 5))
+
+
 def _render_body_color(state: LiveState) -> Group:
     """Render body for color mode with rich panels for JSON output."""
     parts: list[Text | Panel | Padding] = []
@@ -91,7 +98,7 @@ def _render_body_color(state: LiveState) -> Group:
     for cmd_id, argv, stdout, stderr in state.command_entries:
         argv_line = format_argv_for_display(argv)
         parts.append(Text.from_markup(f"  [cyan]▶[/cyan] cmd {cmd_id}"))
-        parts.append(Text(f"     $ {argv_line}"))
+        parts.append(_command_panel(argv_line))
         is_json, formatted = _command_formatted_output(stdout, stderr)
         if is_json:
             syntax = Syntax(formatted, "json", theme="monokai", indent_guides=True)
