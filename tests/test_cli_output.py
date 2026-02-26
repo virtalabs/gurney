@@ -272,3 +272,25 @@ def test_run_no_color_json_plain_text_no_ansi() -> None:
     assert result.exit_code == 0
     assert "status" in result.stdout and "ok" in result.stdout
     assert "\033[" not in result.stdout
+
+
+def test_pull_with_topology_id_calls_reproduce_for_that_topology() -> None:
+    """`testbed pull <topology-id>` resolves topology directly."""
+    root = Path(__file__).resolve().parent.parent
+    if not (root / "topologies" / "blueflow-local" / "topology.yaml").exists():
+        pytest.skip("blueflow-local topology not found")
+    with patch("testbed.cli.pull_and_verify") as m:
+        result = runner.invoke(app, ["pull", "blueflow-local"])
+    assert result.exit_code == 0
+    m.assert_called_once_with("blueflow-local")
+
+
+def test_pull_with_scenario_ref_resolves_topology_id() -> None:
+    """`testbed pull <topology>/<scenario>` resolves topology from index."""
+    root = Path(__file__).resolve().parent.parent
+    if not _scenario_dir_exists(root, TAPIRX_DISCOVERY_REF):
+        pytest.skip("tapirx-dicom-discovery scenario not found")
+    with patch("testbed.cli.pull_and_verify") as m:
+        result = runner.invoke(app, ["pull", TAPIRX_DISCOVERY_REF])
+    assert result.exit_code == 0
+    m.assert_called_once_with("blueflow-local")

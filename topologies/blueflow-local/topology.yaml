@@ -79,7 +79,7 @@ nodes:
     ip: 192.168.10.7
     depends_on: [tapirx]
     volumes:
-      - "${PWD}/replay/pcap:/pcap:ro"
+      - "${PWD}/var/artifacts/pcap:/pcap:ro"
 
   - name: pacs-server
     kind: docker

@@ -1,29 +1,119 @@
 """Image pinning and digest verification for reproducibility."""
 
 import hashlib
+import shutil
 import subprocess
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import yaml
 
+CONFIG_FILENAME = "config.yaml"
 
-# Third-party images from testbed.yaml and topology-tapirx-dicom (exclude ${VAR} images)
-LOCKED_IMAGES = [
-    "postgres:16.6-alpine",
-    "redis:7.4-alpine",
-    "orthancteam/orthanc:25.12.3",
-    "virtalabsinc/blueflow:testbed-3.0.1",
-]
 
-# Pcap artifacts: {filename: {"url": str, "sha256": str | None}}
-# sha256 None = will be computed on first download and saved
-PCAP_ARTIFACTS = {
-    "DICOM_C-ECHO-echoscu.pcap": {
-        "url": "https://wiki.wireshark.org/uploads/__moin_import__/attachments/SampleCaptures/DICOM_C-ECHO-echoscu.pcap",
-        "sha256": None,
-    },
-}
+@dataclass(frozen=True)
+class ArtifactSpec:
+    filename: str
+    url: str
+
+
+@dataclass(frozen=True)
+class LocalImageSpec:
+    dockerfile: str
+    tag: str
+
+
+@dataclass(frozen=True)
+class ReproduceConfig:
+    locked_images: tuple[str, ...]
+    local_images: tuple[LocalImageSpec, ...]
+    artifacts: tuple[ArtifactSpec, ...]
+    login_required_images: tuple[str, ...]
+    fixture_pcap_root: Path
+    cache_pcap_root: Path
+
+
+def _as_str_list(value: Any, field: str, path: Path) -> tuple[str, ...]:
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        raise RuntimeError(f"Invalid {field} in {path}: expected list[str]")
+    return tuple(value)
+
+
+def _parse_local_images(value: Any, path: Path) -> tuple[LocalImageSpec, ...]:
+    if not isinstance(value, list):
+        raise RuntimeError(f"Invalid local_images in {path}: expected list of mappings")
+    parsed: list[LocalImageSpec] = []
+    for idx, entry in enumerate(value):
+        if not isinstance(entry, dict):
+            raise RuntimeError(f"Invalid local_images[{idx}] in {path}: expected mapping")
+        dockerfile = entry.get("dockerfile")
+        tag = entry.get("tag")
+        if not isinstance(dockerfile, str) or not isinstance(tag, str):
+            raise RuntimeError(
+                f"Invalid local_images[{idx}] in {path}: 'dockerfile' and 'tag' must be strings"
+            )
+        parsed.append(LocalImageSpec(dockerfile=dockerfile, tag=tag))
+    return tuple(parsed)
+
+
+def _parse_artifacts(value: Any, path: Path) -> tuple[ArtifactSpec, ...]:
+    if not isinstance(value, list):
+        raise RuntimeError(f"Invalid artifacts in {path}: expected list of mappings")
+    parsed: list[ArtifactSpec] = []
+    for idx, entry in enumerate(value):
+        if not isinstance(entry, dict):
+            raise RuntimeError(f"Invalid artifacts[{idx}] in {path}: expected mapping")
+        filename = entry.get("filename")
+        url = entry.get("url")
+        if not isinstance(filename, str) or not isinstance(url, str):
+            raise RuntimeError(
+                f"Invalid artifacts[{idx}] in {path}: 'filename' and 'url' must be strings"
+            )
+        parsed.append(ArtifactSpec(filename=filename, url=url))
+    return tuple(parsed)
+
+
+def _load_config(project_root: Path, topology_id: str) -> ReproduceConfig:
+    """Load topology-scoped reproducibility config from topologies/<id>/config.yaml."""
+    path = project_root / "topologies" / topology_id / CONFIG_FILENAME
+    if not path.exists():
+        raise RuntimeError(
+            f"Topology config not found:\n  {path}\n"
+            f"Expected config filename: {CONFIG_FILENAME}"
+        )
+    with open(path, encoding="utf-8") as f:
+        raw = yaml.safe_load(f) or {}
+    if not isinstance(raw, dict):
+        raise RuntimeError(f"Invalid config in {path}: expected top-level mapping")
+    required = [
+        "locked_images",
+        "local_images",
+        "artifacts",
+        "login_required_images",
+        "fixture_pcap_root",
+        "cache_pcap_root",
+    ]
+    missing = [key for key in required if key not in raw]
+    if missing:
+        raise RuntimeError(f"Invalid config in {path}: missing required keys {missing}")
+    fixture_pcap_root = raw["fixture_pcap_root"]
+    cache_pcap_root = raw["cache_pcap_root"]
+    if not isinstance(fixture_pcap_root, str) or not isinstance(cache_pcap_root, str):
+        raise RuntimeError(
+            f"Invalid fixture/cache roots in {path}: expected string paths"
+        )
+    return ReproduceConfig(
+        locked_images=_as_str_list(raw["locked_images"], "locked_images", path),
+        local_images=_parse_local_images(raw["local_images"], path),
+        artifacts=_parse_artifacts(raw["artifacts"], path),
+        login_required_images=_as_str_list(
+            raw["login_required_images"], "login_required_images", path
+        ),
+        fixture_pcap_root=Path(fixture_pcap_root),
+        cache_pcap_root=Path(cache_pcap_root),
+    )
 
 
 def _parse_digest_from_inspect(stdout: str) -> str:
@@ -78,9 +168,7 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def _build_local_image(
-    project_root: Path, dockerfile_name: str, image_tag: str
-) -> None:
+def _build_local_image(project_root: Path, dockerfile_name: str, image_tag: str) -> None:
     """Build a local image if Dockerfile exists."""
     dockerfile = project_root / "docker" / dockerfile_name
     if not dockerfile.exists():
@@ -102,71 +190,87 @@ def _build_local_image(
     print(f"  {image_tag}: OK")
 
 
-# TODO: Generalize to build_local_image() for all images.
-def _build_mock_asset_api(project_root: Path) -> None:
-    """Build mock-asset-api:local if Dockerfile exists."""
-    _build_local_image(
-        project_root, "mock-asset-api.Dockerfile", "mock-asset-api:local"
-    )
+def _copy_file(src: Path, dst: Path) -> None:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dst)
 
 
-def _build_tapirx(project_root: Path) -> None:
-    """Build tapirx:local if Dockerfile exists (for tapirx-dicom-discovery scenario)."""
-    _build_local_image(project_root, "tapirx.Dockerfile", "tapirx:local")
+def _fixture_pcap_path(project_root: Path, config: ReproduceConfig, filename: str) -> Path:
+    return project_root / config.fixture_pcap_root / filename
 
 
-def _build_replay(project_root: Path) -> None:
-    """Build replay:local if Dockerfile exists (pcap replay sidecar for tapirx-dicom-discovery)."""
-    _build_local_image(project_root, "replay.Dockerfile", "replay:local")
+def _cache_pcap_path(project_root: Path, config: ReproduceConfig, filename: str) -> Path:
+    return project_root / config.cache_pcap_root / filename
 
 
-def _fetch_pcap(lock_data: dict, project_root: Path) -> None:
-    """Fetch pcap artifacts into replay/pcap/, verify/update sha256 in lock."""
-    pcap_dir = project_root / "replay" / "pcap"
-    pcap_dir.mkdir(parents=True, exist_ok=True)
+def _sync_or_fetch_artifacts(
+    lock_data: dict, project_root: Path, config: ReproduceConfig
+) -> None:
+    """Ensure configured artifacts exist in cache, preferring committed topology fixtures."""
+    cache_dir = project_root / config.cache_pcap_root
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    lock_data.setdefault("pcaps", {})
 
-    if "pcaps" not in lock_data:
-        lock_data["pcaps"] = {}
+    for artifact in config.artifacts:
+        filename = artifact.filename
+        fixture_path = _fixture_pcap_path(project_root, config, filename)
+        cache_path = _cache_pcap_path(project_root, config, filename)
+        expected = lock_data.get("pcaps", {}).get(filename, {}).get("sha256")
 
-    for filename, meta in PCAP_ARTIFACTS.items():
-        url = meta["url"]
-        path = pcap_dir / filename
-
-        if path.exists():
-            actual = _sha256_file(path)
-            expected = lock_data.get("pcaps", {}).get(filename, {}).get("sha256")
+        if fixture_path.exists():
+            actual = _sha256_file(fixture_path)
             if expected and actual != expected:
                 raise RuntimeError(
-                    f"SHA256 mismatch for {filename}\n"
-                    f"  expected: {expected}\n  actual:   {actual}"
+                    f"SHA256 mismatch for fixture {filename}\n"
+                    f"  expected: {expected}\n"
+                    f"  actual:   {actual}\n"
+                    f"  fixture:  {fixture_path}"
                 )
-            print(f"  {filename}: OK")
+            if not cache_path.exists() or _sha256_file(cache_path) != actual:
+                _copy_file(fixture_path, cache_path)
+                print(f"  Synced fixture {filename} -> {config.cache_pcap_root}")
+            lock_data["pcaps"][filename] = {"url": artifact.url, "sha256": actual}
+            print(f"  {filename}: OK (fixture)")
+            continue
+
+        if cache_path.exists():
+            actual = _sha256_file(cache_path)
+            if expected and actual != expected:
+                raise RuntimeError(
+                    f"SHA256 mismatch for cached artifact {filename}\n"
+                    f"  expected: {expected}\n"
+                    f"  actual:   {actual}\n"
+                    f"  cache:    {cache_path}"
+                )
+            lock_data["pcaps"][filename] = {"url": artifact.url, "sha256": actual}
+            print(f"  {filename}: OK (cache)")
             continue
 
         print(f"  Fetching {filename}...")
-        urllib.request.urlretrieve(url, path)
-        actual = _sha256_file(path)
-        lock_data.setdefault("pcaps", {})[filename] = {"url": url, "sha256": actual}
+        urllib.request.urlretrieve(artifact.url, cache_path)
+        actual = _sha256_file(cache_path)
+        lock_data["pcaps"][filename] = {"url": artifact.url, "sha256": actual}
         print(f"  {filename}: {actual}")
 
 
-def pull_and_verify() -> None:
-    """Pull images, build mock-asset-api, fetch pcap, verify. Update lockfile if missing."""
+def pull_and_verify(topology_id: str) -> None:
+    """Pull/build/verify using topology-scoped config.yaml."""
     project_root = Path.cwd()
+    config = _load_config(project_root, topology_id)
     lock_path = project_root / "images.lock"
     lock_data = _load_lockfile(lock_path)
 
-    _build_mock_asset_api(project_root)
-    _build_tapirx(project_root)
-    _build_replay(project_root)
+    print(f"Topology: {topology_id}")
+    print(f"Config: topologies/{topology_id}/{CONFIG_FILENAME}")
 
-    # Images that may require docker login; skip pull/verify without failing.
-    login_required_images = {"virtalabsinc/blueflow:testbed-3.0.0"}
+    for local in config.local_images:
+        _build_local_image(project_root, local.dockerfile, local.tag)
 
-    for image in LOCKED_IMAGES:
+    login_required_images = set(config.login_required_images)
+    for image in config.locked_images:
         try:
             actual = _get_image_digest(image)
-        except (RuntimeError, subprocess.CalledProcessError) as e:
+        except (RuntimeError, subprocess.CalledProcessError):
             if image in login_required_images:
                 print(f"  {image}: skip (pull failed, may require docker login)")
                 continue
@@ -183,6 +287,6 @@ def pull_and_verify() -> None:
         else:
             print(f"  {image}: OK")
 
-    _fetch_pcap(lock_data, project_root)
+    _sync_or_fetch_artifacts(lock_data, project_root, config)
 
     _save_lockfile(lock_path, lock_data)
