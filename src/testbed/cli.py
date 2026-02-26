@@ -12,11 +12,13 @@ from rich.syntax import Syntax
 from testbed.compose import force_cleanup
 from testbed.console import UIMode, should_use_color, use_live_ui
 from testbed.format_output import (
+    format_argv_for_display,
     format_command_output,
     format_command_output_one_line,
     parse_command_output_as_json,
 )
 from testbed.live_ui import run_with_live_ui
+from testbed.reproduce import pull_and_verify
 from testbed.runner import run_scenario, RunResult
 from testbed.topology_index import get_or_build_index
 from testbed.utility import ensure_log_dir, logger
@@ -139,7 +141,7 @@ def _echo_command_blocks(
         typer.echo("")
     for command_id, resolved_argv, stdout, stderr in outputs:
         typer.echo(f"  cmd {command_id}")
-        argv_line = " ".join(resolved_argv) if resolved_argv else ""
+        argv_line = format_argv_for_display(resolved_argv)
         typer.echo(f"     $ {argv_line}")
         _print_command_output(stdout or "", stderr or "", use_color, indent=5, verbose=False)
         typer.echo("")
@@ -190,6 +192,29 @@ def _resolve_scenario_dir(project_root: Path, scenario: str) -> Path | None:
             if entry.ref == scenario:
                 return project_root / Path(entry.path).parent
     return None
+
+
+def _resolve_topology_id(project_root: Path, target: str) -> str:
+    """Resolve topology id from topology id or scenario ref."""
+    if "/" in target:
+        scenario = target
+        try:
+            index, _ = get_or_build_index(project_root)
+        except ValueError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(1) from exc
+        for topology in index.topologies:
+            for entry in topology.scenarios:
+                if entry.ref == scenario:
+                    return topology.id
+        typer.echo(f"Scenario not found: {scenario}", err=True)
+        raise typer.Exit(1)
+    topology_id = target
+    topology_path = project_root / "topologies" / topology_id / "topology.yaml"
+    if not topology_path.exists():
+        typer.echo(f"Topology not found: {topology_id}", err=True)
+        raise typer.Exit(1)
+    return topology_id
 
 
 def _emit_run_output(
@@ -294,10 +319,27 @@ def list_scenarios() -> None:
         typer.echo(str(exc), err=True)
         raise typer.Exit(1)
 
+    typer.echo("Available scenarios:")
     for topology in index.topologies:
-        typer.echo(topology.id)
+        typer.echo(f"\n{topology.id}")
         for scenario in topology.scenarios:
-            typer.echo(f"  {scenario.ref}")
+            typer.echo(f"  - {scenario.ref}")
+
+
+@app.command()
+def pull(
+    target: str = typer.Argument(
+        ..., help="Topology id or scenario ref (<topology-id>/<scenario-id>)"
+    ),
+) -> None:
+    """Pull/build/verify reproducibility assets for a selected topology config."""
+    project_root = Path.cwd()
+    topology_id = _resolve_topology_id(project_root, target)
+    try:
+        pull_and_verify(topology_id)
+    except RuntimeError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from exc
 
 
 @app.command()

@@ -13,7 +13,9 @@ Reproducible, self-contained test environment that exercises BlueFlow's passive 
 
 ```bash
 make install        # uv sync --all-extras
+make pull TOPOLOGY=blueflow-local   # build/pull/sync using topologies/<id>/config.yaml
 uv run testbed list
+uv run testbed pull blueflow-local
 uv run testbed run <topology-id>/<scenario-id>
 ```
 
@@ -31,15 +33,34 @@ Or use the `testbed` script after install: `testbed list`, `testbed run <topolog
 topologies/
   <topology-id>/
     topology.yaml
+    config.yaml
+    fixtures/
+      pcap/
     scenarios/
       <scenario-id>/
         scenario.yaml
+
+var/
+  artifacts/
+    pcap/
+  index/
+  log/
 ```
+
+### Artifact policy (hybrid fixtures + cache)
+
+- **Committed fixtures:** keep small/stable topology fixtures in `topologies/<topology-id>/fixtures/pcap/`.
+- **Persistent runtime cache:** fetched or large artifacts live in `var/artifacts/pcap/` and are kept across runs.
+- Reproducibility config is per-topology at `topologies/<topology-id>/config.yaml` (lowercase for consistent naming).
+- `make pull TOPOLOGY=<topology-id>` or `testbed pull <topology-id>` syncs topology fixtures into `var/artifacts/pcap/` and fetches any missing configured artifacts.
+- `testbed run` expects replay pcaps at `/pcap/<filename>` inside containers via host mount `var/artifacts/pcap`.
+- Use `make clean-artifacts` to remove cached artifacts when you want to force a clean re-fetch.
 
 ## Commands
 
 - `testbed run <topology-id>/<scenario-id>` — Run a scenario by scenario ref
 - `testbed list` — List available scenarios grouped by topology using a lazy index
+- `testbed pull <topology-id|topology-id/scenario-id>` — Pull/build/verify reproducibility assets via selected topology `config.yaml`
 - `testbed teardown` — Force-remove all testbed-managed Docker resources
 
 ## Scenarios
@@ -79,7 +100,7 @@ tapirx -pcap /pcap/DICOM_C-ECHO-echoscu.pcap -apiurl http://mock-asset-api:8000/
 tapirx -iface eth0 -verbose -limit 500
 ```
 
-To get a shell in the tapirx image: `docker run -it --rm --entrypoint /bin/sh tapirx:local`. To run with the scenario’s volumes and network: from `topologies/blueflow-local/scenarios/tapirx-dicom-discovery/.build`, run `docker compose run --rm --no-deps --entrypoint /bin/sh tapirx-pcap` (or `tapirx-live`), then run `tapirx` with the flags above (pcap is at `/pcap`).
+To get a shell in the tapirx image: `docker run -it --rm --entrypoint /bin/sh tapirx:local`. To run with the scenario’s volumes and network: from `topologies/blueflow-local/scenarios/tapirx-dicom-discovery/.build`, run `docker compose run --rm --no-deps --entrypoint /bin/sh tapirx-pcap` (or `tapirx-live`), then run `tapirx` with the flags above (pcap is at `/pcap`, mounted from `var/artifacts/pcap`).
 
 ### Small clinic scenario
 

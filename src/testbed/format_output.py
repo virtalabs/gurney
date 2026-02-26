@@ -1,6 +1,7 @@
 """Format command output for display: JSON prettified (jq-style) or one-line fallback."""
 
 import json
+import shlex
 
 
 def parse_command_output_as_json(stdout: str, stderr: str) -> tuple[bool, str]:
@@ -58,3 +59,10 @@ def format_command_output_one_line(
         line = raw.split("\n")[0]
         return (line[:max_len] + "...") if len(line) > max_len else line
     return json.dumps(data, indent=2)
+
+
+def format_argv_for_display(argv: list[str]) -> str:
+    """Render argv as a shell-like command line for human-readable CLI output."""
+    if not argv:
+        return ""
+    return shlex.join(argv)

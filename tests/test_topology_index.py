@@ -106,10 +106,11 @@ def test_cli_list_groups_by_topology(tmp_path: Path, monkeypatch) -> None:
     result = runner.invoke(app, ["list"])
     assert result.exit_code == 0
     out = result.stdout
+    assert "Available scenarios:" in out
     assert "alpha" in out
-    assert "  alpha/smoke" in out
+    assert "  - alpha/smoke" in out
     assert "beta" in out
-    assert "  beta/discovery" in out
+    assert "  - beta/discovery" in out
 
 
 def test_get_or_build_index_regenerates_when_cache_files_corrupt(tmp_path: Path) -> None:

@@ -1,7 +1,9 @@
 """Scenario orchestration: parse, generate compose, up, teardown."""
 
 import logging
+import shutil
 import time
+from filecmp import cmp
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -28,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 # Extensions treated as readable text for verbose output
 OUTPUT_READABLE_SUFFIXES = (".txt", ".json", ".jsonl", ".yaml", ".yml", ".log")
+RUNTIME_PCAP_DIR = Path("var") / "artifacts" / "pcap"
 
 # (command_id, resolved_argv, stdout, stderr)
 CommandOutputItem = tuple[str, list[str], str, str]
@@ -356,6 +359,78 @@ def _collect_check_urls(scenario: ScenarioConfig) -> list[str]:
     return urls
 
 
+def _topology_id_from_topology_file(topology_file: str) -> str | None:
+    """Extract topology id from path like topologies/<topology-id>/topology.yaml."""
+    parts = Path(topology_file).parts
+    if len(parts) >= 3 and parts[0] == "topologies" and parts[-1] == "topology.yaml":
+        return parts[1]
+    return None
+
+
+def _iter_required_pcap_rel_paths(
+    scenario: ScenarioConfig, facts: dict[str, Any]
+) -> list[str]:
+    """Return unique relative pcap paths referenced by command argv entries under /pcap/."""
+    rel_paths: list[str] = []
+    seen: set[str] = set()
+    for cmd in scenario.commands:
+        resolved = resolve_argv(cmd.run.argv, facts)
+        for arg in resolved:
+            if not arg.startswith("/pcap/"):
+                continue
+            rel = arg.removeprefix("/pcap/").lstrip("/")
+            if not rel or rel in seen:
+                continue
+            seen.add(rel)
+            rel_paths.append(rel)
+    return rel_paths
+
+
+def _stage_required_pcaps(
+    scenario: ScenarioConfig,
+    facts: dict[str, Any],
+    project_root: Path,
+) -> None:
+    """Stage required pcap files into var/artifacts/pcap, preferring topology fixtures."""
+    required_rel_paths = _iter_required_pcap_rel_paths(scenario, facts)
+    if not required_rel_paths:
+        return
+    topology_id = _topology_id_from_topology_file(scenario.topology)
+    fixture_root = (
+        project_root / "topologies" / topology_id / "fixtures" / "pcap"
+        if topology_id
+        else None
+    )
+    cache_root = project_root / RUNTIME_PCAP_DIR
+    cache_root.mkdir(parents=True, exist_ok=True)
+
+    for rel in required_rel_paths:
+        cache_path = cache_root / rel
+        fixture_path = fixture_root / rel if fixture_root else None
+        if fixture_path is not None and fixture_path.is_file():
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            if not cache_path.exists() or not cmp(fixture_path, cache_path, shallow=False):
+                shutil.copy2(fixture_path, cache_path)
+            continue
+        if cache_path.is_file():
+            continue
+        expected_fixture = (
+            str(fixture_path)
+            if fixture_path is not None
+            else "<topologies/<topology-id>/fixtures/pcap/...>"
+        )
+        raise RuntimeError(
+            "Missing required pcap artifact for scenario command argv:\n"
+            f"  /pcap/{rel}\n"
+            f"Expected one of:\n"
+            f"  - {expected_fixture}\n"
+            f"  - {cache_path}\n"
+            "Fix:\n"
+            "  - add the file under topology fixtures, or\n"
+            "  - run `make pull` to populate var/artifacts/pcap"
+        )
+
+
 def _execute_commands(
     scenario: ScenarioConfig,
     facts: dict,
@@ -549,6 +624,9 @@ def run_scenario(
     base = project_root or Path.cwd()
     scenario = load_scenario(scenario_dir)
     topology = load_topology(scenario.topology, base_dir=base)
+
+    facts = _facts_by_name(scenario)
+    _stage_required_pcaps(scenario, facts, base)
 
     node_names = [n.id for n in scenario.nodes]
     topology = _filter_topology(topology, node_names)

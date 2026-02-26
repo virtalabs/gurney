@@ -87,7 +87,7 @@
       "testbed.managed": "true"
     "network_mode": "service:tapirx"
     "volumes":
-    - "${PWD}/replay/pcap:/pcap:ro"
+    - "${PWD}/var/artifacts/pcap:/pcap:ro"
     "depends_on":
       "tapirx":
         "condition": "service_started"

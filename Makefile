@@ -1,4 +1,4 @@
-.PHONY: install pull test clean lock complexity lint yamllint
+.PHONY: install pull test clean clean-artifacts lock complexity lint yamllint
 
 install: lock
 	uv sync --all-extras
@@ -8,7 +8,11 @@ lock:
 
 pull:
 	@echo "Pulling and verifying images..."
-	@uv run python -c "from testbed.reproduce import pull_and_verify; pull_and_verify()"
+	@if [ -z "$(TOPOLOGY)" ]; then \
+		echo "Usage: make pull TOPOLOGY=<topology-id>"; \
+		exit 2; \
+	fi
+	@uv run python -c "from testbed.reproduce import pull_and_verify; pull_and_verify(\"$(TOPOLOGY)\")"
 
 test:
 	uv run pytest -v -m "not slow"
@@ -22,7 +26,10 @@ lint:
 	uv run prospector .
 
 yamllint:
-	uv run yamllint testbed.yaml $$(find scenarios -name 'scenario.yaml' -not -path '*/.build/*')
+	uv run yamllint topologies/*/topology.yaml $$(find topologies -name 'scenario.yaml' -not -path '*/.build/*')
+
+clean-artifacts:
+	rm -rf var/artifacts
 
 clean:
 	rm -rf build/ dist/ *.egg-info .pytest_cache

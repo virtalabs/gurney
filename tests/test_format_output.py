@@ -1,6 +1,7 @@
 """Tests for JSON-aware command output formatting."""
 
 from testbed.format_output import (
+    format_argv_for_display,
     format_command_output,
     format_command_output_one_line,
     parse_command_output_as_json,
@@ -74,3 +75,16 @@ def test_parse_command_output_as_json_invalid() -> None:
     is_json2, out2 = parse_command_output_as_json("", "")
     assert is_json2 is False
     assert out2 == "(no output)"
+
+
+def test_format_argv_for_display_empty() -> None:
+    """Empty argv renders as empty string."""
+    assert format_argv_for_display([]) == ""
+
+
+def test_format_argv_for_display_shell_safe_join() -> None:
+    """Args containing spaces are shell-escaped for display clarity."""
+    rendered = format_argv_for_display(["curl", "-H", "X Name: demo value", "http://api/"])
+    assert rendered.startswith("curl -H ")
+    assert "'X Name: demo value'" in rendered
+    assert rendered.endswith("http://api/")

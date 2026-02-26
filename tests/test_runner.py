@@ -964,3 +964,112 @@ def test_teardown_no_orphans() -> None:
         text=True,
     )
     assert not result.stdout.strip(), "Orphaned containers found"
+
+
+def test_run_scenario_stages_fixture_pcap_into_runtime_cache(tmp_path: Path) -> None:
+    """Scenario /pcap references stage topology fixture into var/artifacts before compose run."""
+    topology_dir = tmp_path / "topologies" / "demo"
+    scenario_dir = topology_dir / "scenarios" / "pcap-scenario"
+    fixture_path = topology_dir / "fixtures" / "pcap" / "sample.pcap"
+    fixture_path.parent.mkdir(parents=True)
+    fixture_path.write_bytes(b"fixture-bytes")
+
+    topology_file = topology_dir / "topology.yaml"
+    topology_file.parent.mkdir(parents=True, exist_ok=True)
+    topology_file.write_text(
+        "networks:\n"
+        "  - name: net1\n"
+        "    cidr: 192.168.10.0/24\n"
+        "nodes:\n"
+        "  - name: replay\n"
+        "    kind: docker\n"
+        "    image: replay:local\n"
+        "    network: net1\n"
+        "    ip: 192.168.10.2\n",
+        encoding="utf-8",
+    )
+
+    scenario_file = scenario_dir / "scenario.yaml"
+    scenario_file.parent.mkdir(parents=True, exist_ok=True)
+    scenario_file.write_text(
+        "name: pcap-scenario\n"
+        "topology: topologies/demo/topology.yaml\n"
+        "nodes:\n"
+        "  - id: replay\n"
+        "    build: run\n"
+        "    networks: [net1]\n"
+        "commands:\n"
+        "  - id: replay-one\n"
+        "    node: replay\n"
+        "    run:\n"
+        "      argv: [tcpreplay, -i, eth0, /pcap/sample.pcap]\n"
+        "    retry:\n"
+        "      attempts: 1\n"
+        "      delay_s: 0\n",
+        encoding="utf-8",
+    )
+
+    compose_path = tmp_path / "compose.yaml"
+    compose_path.write_text("services: {}\n", encoding="utf-8")
+    with patch("testbed.runner.generate_compose", return_value=compose_path), patch(
+        "testbed.runner.compose_up", return_value=("", "")
+    ), patch("testbed.runner.compose_run", return_value=("ok", "")), patch(
+        "testbed.runner.compose_logs", return_value=[]
+    ), patch(
+        "testbed.runner.compose_down", return_value=("", "")
+    ):
+        result = run_scenario(scenario_dir, project_root=tmp_path)
+
+    assert result.passed is True
+    cache_path = tmp_path / "var" / "artifacts" / "pcap" / "sample.pcap"
+    assert cache_path.exists()
+    assert cache_path.read_bytes() == b"fixture-bytes"
+
+
+def test_run_scenario_missing_pcap_shows_actionable_error(tmp_path: Path) -> None:
+    """Missing /pcap artifact fails fast with fixture/cache guidance."""
+    topology_dir = tmp_path / "topologies" / "demo"
+    scenario_dir = topology_dir / "scenarios" / "pcap-scenario"
+
+    topology_file = topology_dir / "topology.yaml"
+    topology_file.parent.mkdir(parents=True, exist_ok=True)
+    topology_file.write_text(
+        "networks:\n"
+        "  - name: net1\n"
+        "    cidr: 192.168.10.0/24\n"
+        "nodes:\n"
+        "  - name: replay\n"
+        "    kind: docker\n"
+        "    image: replay:local\n"
+        "    network: net1\n"
+        "    ip: 192.168.10.2\n",
+        encoding="utf-8",
+    )
+
+    scenario_file = scenario_dir / "scenario.yaml"
+    scenario_file.parent.mkdir(parents=True, exist_ok=True)
+    scenario_file.write_text(
+        "name: pcap-scenario\n"
+        "topology: topologies/demo/topology.yaml\n"
+        "nodes:\n"
+        "  - id: replay\n"
+        "    build: run\n"
+        "    networks: [net1]\n"
+        "commands:\n"
+        "  - id: replay-one\n"
+        "    node: replay\n"
+        "    run:\n"
+        "      argv: [tcpreplay, -i, eth0, /pcap/missing.pcap]\n"
+        "    retry:\n"
+        "      attempts: 1\n"
+        "      delay_s: 0\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError) as exc:
+        run_scenario(scenario_dir, project_root=tmp_path)
+    msg = str(exc.value)
+    assert "Missing required pcap artifact" in msg
+    assert "topologies/demo/fixtures/pcap/missing.pcap" in msg
+    assert "var/artifacts/pcap/missing.pcap" in msg
+    assert "run `make pull`" in msg

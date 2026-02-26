@@ -13,7 +13,7 @@ from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 
-from testbed.format_output import format_command_output_one_line
+from testbed.format_output import format_argv_for_display, format_command_output_one_line
 from testbed.runner import RunEvent, RunResult, run_scenario
 
 # ASCII banner line (no external font; simple box)
@@ -89,7 +89,7 @@ def _render_body_color(state: LiveState) -> Group:
     for node_id in state.up_nodes:
         parts.append(Text.from_markup(f"  [green]✓[/green] up {node_id}"))
     for cmd_id, argv, stdout, stderr in state.command_entries:
-        argv_line = " ".join(argv) if argv else ""
+        argv_line = format_argv_for_display(argv)
         parts.append(Text.from_markup(f"  [cyan]▶[/cyan] cmd {cmd_id}"))
         parts.append(Text(f"     $ {argv_line}"))
         is_json, formatted = _command_formatted_output(stdout, stderr)
@@ -109,7 +109,7 @@ def _render_body_plain(state: LiveState) -> Text:
     for node_id in state.up_nodes:
         lines.append(f"  up {node_id}")
     for cmd_id, argv, stdout, stderr in state.command_entries:
-        argv_line = " ".join(argv) if argv else ""
+        argv_line = format_argv_for_display(argv)
         _, formatted = _command_formatted_output(stdout, stderr)
         lines.append(f"  cmd {cmd_id}")
         lines.append(f"     $ {argv_line}")
