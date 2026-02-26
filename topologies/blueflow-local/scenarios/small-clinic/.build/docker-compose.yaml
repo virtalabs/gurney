@@ -2,7 +2,7 @@
   "postgres":
     "image": "postgres:16.6-alpine"
     "labels":
-      "testbed.managed": "true"
+      "gurney.managed": "true"
     "networks":
       "clinical-vlan":
         "ipv4_address": "192.168.10.2"
@@ -20,7 +20,7 @@
   "redis":
     "image": "redis:7.4-alpine"
     "labels":
-      "testbed.managed": "true"
+      "gurney.managed": "true"
     "networks":
       "clinical-vlan":
         "ipv4_address": "192.168.10.3"
@@ -35,7 +35,7 @@
   "blueflow":
     "image": "virtalabsinc/blueflow:testbed-3.0.1"
     "labels":
-      "testbed.managed": "true"
+      "gurney.managed": "true"
     "networks":
       "clinical-vlan":
         "ipv4_address": "192.168.10.4"
@@ -69,7 +69,7 @@
   "tapirx":
     "image": "tapirx:local"
     "labels":
-      "testbed.managed": "true"
+      "gurney.managed": "true"
     "networks":
       "clinical-vlan":
         "ipv4_address": "192.168.10.6"
@@ -84,7 +84,7 @@
   "replay":
     "image": "replay:local"
     "labels":
-      "testbed.managed": "true"
+      "gurney.managed": "true"
     "network_mode": "service:tapirx"
     "depends_on":
       "tapirx":
@@ -92,7 +92,7 @@
   "pacs-server":
     "image": "orthancteam/orthanc:25.12.3"
     "labels":
-      "testbed.managed": "true"
+      "gurney.managed": "true"
     "networks":
       "clinical-vlan":
         "ipv4_address": "192.168.10.10"
@@ -102,7 +102,7 @@
   "orthanc-sender":
     "image": "orthancteam/orthanc:25.12.3"
     "labels":
-      "testbed.managed": "true"
+      "gurney.managed": "true"
     "network_mode": "service:tapirx"
     "depends_on":
       "tapirx":
@@ -110,7 +110,7 @@
   "meddream":
     "image": "meddream/conquest-pacs-viewer:latest"
     "labels":
-      "testbed.managed": "true"
+      "gurney.managed": "true"
     "networks":
       "clinical-vlan":
         "ipv4_address": "192.168.10.11"
@@ -128,4 +128,4 @@
       "config":
       - "subnet": "192.168.10.0/24"
     "labels":
-      "testbed.managed": "true"
+      "gurney.managed": "true"
