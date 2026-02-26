@@ -5,19 +5,9 @@ locked_images:
   - virtalabsinc/blueflow:testbed-3.0.1
 
 local_images:
-  - dockerfile: mock-asset-api.Dockerfile
-    tag: mock-asset-api:local
   - dockerfile: tapirx.Dockerfile
     tag: tapirx:local
   - dockerfile: replay.Dockerfile
     tag: replay:local
 
-artifacts:
-  - filename: DICOM_C-ECHO-echoscu.pcap
-    url: https://wiki.wireshark.org/uploads/__moin_import__/attachments/SampleCaptures/DICOM_C-ECHO-echoscu.pcap
-
-login_required_images:
-  - virtalabsinc/blueflow:testbed-3.0.0
-
-fixture_pcap_root: topologies/blueflow-local/fixtures/pcap
-cache_pcap_root: var/artifacts/pcap
+login_required_images: []

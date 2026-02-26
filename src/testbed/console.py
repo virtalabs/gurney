@@ -1,12 +1,7 @@
-"""Console capabilities: TTY detection, color policy, and semantic style helpers."""
+"""Console capabilities: TTY detection and color policy."""
 
 import os
 import sys
-from typing import Literal
-
-UIMode = Literal["classic", "live"]
-
-
 def is_tty(stream: object = None) -> bool:
     """Return True if stream is an interactive terminal. Default: stdout."""
     if stream is None:
@@ -23,6 +18,6 @@ def should_use_color(no_color_flag: bool = False) -> bool:
     return is_tty()
 
 
-def use_live_ui(ui_mode: UIMode) -> bool:
-    """Return True if live UI (banner, spinner, streamed output) should be used."""
-    return ui_mode == "live" and is_tty()
+def use_live_ui() -> bool:
+    """Return True when live UI rendering should be used."""
+    return is_tty()

@@ -15,11 +15,15 @@ Reproducible, self-contained test environment that exercises BlueFlow's passive 
 make install        # uv sync --all-extras
 make pull TOPOLOGY=blueflow-local   # build/pull/sync using topologies/<id>/config.yaml
 uv run testbed list
+uv run testbed --json list
+uv run testbed list --json
 uv run testbed pull blueflow-local
 uv run testbed run <topology-id>/<scenario-id>
+uv run testbed --json run <topology-id>/<scenario-id>
+uv run testbed run <topology-id>/<scenario-id> --json
 ```
 
-Or use the `testbed` script after install: `testbed list`, `testbed run <topology-id>/<scenario-id>`.
+Or use the `testbed` script after install: `testbed list`, `testbed run <topology-id>/<scenario-id>`, `testbed --json run <topology-id>/<scenario-id>`.
 
 ## Concepts
 
@@ -62,6 +66,25 @@ var/
 - `testbed list` — List available scenarios grouped by topology using a lazy index
 - `testbed pull <topology-id|topology-id/scenario-id>` — Pull/build/verify reproducibility assets via selected topology `config.yaml`
 - `testbed teardown` — Force-remove all testbed-managed Docker resources
+- Root `--json` flag switches any command to machine-readable NDJSON events:
+  - `testbed --json run <topology-id>/<scenario-id>`
+  - `testbed --json list`
+  - `testbed --json pull <topology-id|topology-id/scenario-id>`
+  - `testbed --json teardown`
+- Appended `--json` is also supported and equivalent:
+  - `testbed run <topology-id>/<scenario-id> --json`
+  - `testbed list --json`
+  - `testbed pull <topology-id|topology-id/scenario-id> --json`
+  - `testbed teardown --json`
+- Use only one `--json` flag per command invocation.
+
+### NDJSON contract
+
+- One compact JSON object per line (newline-delimited JSON).
+- Common envelope keys: `event`, `command`, `ts`, optional `payload`.
+- Each command emits a terminal event:
+  - Success: `{"event":"completed","command":"<cmd>",...}`
+  - Failure: `{"event":"failed","command":"<cmd>","payload":{"error":"..."}}`
 
 ## Scenarios
 
