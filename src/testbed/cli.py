@@ -18,6 +18,7 @@ from testbed.format_output import (
 )
 from testbed.live_ui import run_with_live_ui
 from testbed.runner import run_scenario, RunResult
+from testbed.topology_index import get_or_build_index
 from testbed.utility import ensure_log_dir, logger
 
 VAR_LOG = Path("var") / "log"
@@ -119,10 +120,21 @@ def _echo_default_output(
     use_color: bool = False,
 ) -> None:
     """Print default (non-verbose) output: up lines, cmd blocks, then PASS or FAIL."""
-    up_ids = result.up_node_ids or []
+    _echo_up_nodes(result.up_node_ids or [])
+    _echo_command_blocks(result.command_outputs or [], use_color=use_color)
+    _echo_final_status(result, use_color=use_color)
+
+
+def _echo_up_nodes(up_ids: list[str]) -> None:
+    """Print node up lines for default output."""
     for node_id in up_ids:
         typer.echo(f"  up {node_id}")
-    outputs = result.command_outputs or []
+
+
+def _echo_command_blocks(
+    outputs: list[tuple[str, list[str], str, str]], use_color: bool = False
+) -> None:
+    """Print command blocks for default output."""
     if outputs:
         typer.echo("")
     for command_id, resolved_argv, stdout, stderr in outputs:
@@ -131,15 +143,30 @@ def _echo_default_output(
         typer.echo(f"     $ {argv_line}")
         _print_command_output(stdout or "", stderr or "", use_color, indent=5, verbose=False)
         typer.echo("")
+
+
+def _status_line(result: RunResult, use_color: bool) -> str:
+    """Build PASS/FAIL status line with optional ANSI color."""
+    line = (
+        f"PASS {result.scenario} ({result.duration_s:.1f}s)"
+        if result.passed
+        else f"FAIL {result.scenario} ({result.duration_s:.1f}s)"
+    )
+    if not use_color:
+        return line
     if result.passed:
-        line = f"PASS {result.scenario} ({result.duration_s:.1f}s)"
-        typer.echo(f"{ANSI_GREEN}{line}{ANSI_RESET}" if use_color else line)
-    else:
-        line = f"FAIL {result.scenario} ({result.duration_s:.1f}s)"
-        out = f"{ANSI_RED}{line}{ANSI_RESET}" if use_color else line
-        typer.echo(out, err=True)
-        if result.error:
-            typer.echo(result.error, err=True)
+        return f"{ANSI_GREEN}{line}{ANSI_RESET}"
+    return f"{ANSI_RED}{line}{ANSI_RESET}"
+
+
+def _echo_final_status(result: RunResult, use_color: bool = False) -> None:
+    """Print final status line and optional error details."""
+    if result.passed:
+        typer.echo(_status_line(result, use_color))
+        return
+    typer.echo(_status_line(result, use_color), err=True)
+    if result.error:
+        typer.echo(result.error, err=True)
 
 
 def _echo_verbose_layers(result: RunResult, use_color: bool = False) -> None:
@@ -149,6 +176,38 @@ def _echo_verbose_layers(result: RunResult, use_color: bool = False) -> None:
     _echo_scenario_output_section(result)
     typer.echo("------ Testbed ------")
     typer.echo(f"PASS {result.scenario} ({result.duration_s:.1f}s)")
+
+
+def _resolve_scenario_dir(project_root: Path, scenario: str) -> Path | None:
+    """Resolve scenario ref to scenario directory via topology index."""
+    try:
+        index, _ = get_or_build_index(project_root)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from exc
+    for topology in index.topologies:
+        for entry in topology.scenarios:
+            if entry.ref == scenario:
+                return project_root / Path(entry.path).parent
+    return None
+
+
+def _emit_run_output(
+    result: RunResult, *, ui: UIMode, verbose: bool, use_color: bool
+) -> None:
+    """Emit run output for live or classic mode."""
+    if use_live_ui(ui):
+        return  # live UI already printed output
+    should_show_verbose = verbose and result.passed and (
+        result.compose_up_stdout is not None
+        or result.compose_up_service_logs
+        or result.command_outputs
+        or result.output_files
+    )
+    if should_show_verbose:
+        _echo_verbose_layers(result, use_color=use_color)
+        return
+    _echo_default_output(result, use_color=use_color)
 
 
 app = typer.Typer(
@@ -165,7 +224,7 @@ def _main() -> None:
 @app.command()
 def run(
     scenario: str = typer.Argument(
-        ..., help="Scenario name (directory under scenarios/)"
+        ..., help="Scenario ref as <topology-id>/<scenario-id>"
     ),
     keep: bool = typer.Option(False, "--keep", "-k", help="Do not teardown after run"),
     verbose: bool = typer.Option(
@@ -187,12 +246,11 @@ def run(
 ) -> None:
     """Run a scenario: topology up, health checks, teardown."""
     project_root = Path.cwd()
-    scenarios_dir = project_root / "scenarios"
-    scenario_dir = scenarios_dir / scenario
+    scenario_dir = _resolve_scenario_dir(project_root, scenario)
 
-    if not scenario_dir.is_dir():
-        typer.echo(f"Scenario not found: {scenario_dir}", err=True)
-        logger.error("Scenario not found: %s", scenario_dir)
+    if scenario_dir is None or not scenario_dir.is_dir():
+        typer.echo(f"Scenario not found: {scenario}", err=True)
+        logger.error("Scenario not found: %s", scenario)
         raise typer.Exit(1)
 
     use_color = should_use_color(no_color)
@@ -212,22 +270,7 @@ def run(
             verbose=verbose,
             project_root=project_root,
         )
-
-    if use_live_ui(ui):
-        pass  # live UI already printed output
-    elif (
-        verbose
-        and result.passed
-        and (
-            result.compose_up_stdout is not None
-            or result.compose_up_service_logs
-            or result.command_outputs
-            or result.output_files
-        )
-    ):
-        _echo_verbose_layers(result, use_color=use_color)
-    else:
-        _echo_default_output(result, use_color=use_color)
+    _emit_run_output(result, ui=ui, verbose=verbose, use_color=use_color)
     if result.passed:
         logger.info("PASS %s (%.1fs)", result.scenario, result.duration_s)
     else:
@@ -243,14 +286,18 @@ def run(
 
 @app.command(name="list")
 def list_scenarios() -> None:
-    """List available scenarios."""
-    scenarios_dir = Path.cwd() / "scenarios"
-    if not scenarios_dir.is_dir():
-        return
+    """List available scenarios grouped by topology."""
+    project_root = Path.cwd()
+    try:
+        index, _ = get_or_build_index(project_root)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1)
 
-    for path in sorted(scenarios_dir.iterdir()):
-        if path.is_dir() and (path / "scenario.yaml").exists():
-            typer.echo(path.name)
+    for topology in index.topologies:
+        typer.echo(topology.id)
+        for scenario in topology.scenarios:
+            typer.echo(f"  {scenario.ref}")
 
 
 @app.command()

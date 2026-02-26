@@ -67,6 +67,7 @@ nodes:
     network: clinical-vlan
     ip: 192.168.10.6
     depends_on: [blueflow]
+    cap_add: [NET_ADMIN]
     environment:
       BLUEFLOW_API_URL: http://192.168.10.4:8000/api
       LISTEN_INTERFACE: eth0
@@ -86,3 +87,18 @@ nodes:
     network: clinical-vlan
     ip: 192.168.10.10
     ports: [4242, 8042]
+
+  - name: orthanc-sender
+    kind: docker
+    image: orthancteam/orthanc:25.12.3
+    network: clinical-vlan
+    ip: 192.168.10.12
+    depends_on: [tapirx]
+
+  - name: meddream
+    kind: docker
+    image: ${MEDDREAM_IMAGE:-meddream/conquest-pacs-viewer:latest}
+    network: clinical-vlan
+    ip: 192.168.10.11
+    command: sleep infinity
+    ports: [5678, 8080]

@@ -78,42 +78,51 @@ def _is_json_output(stdout: str, stderr: str) -> tuple[bool, str]:
         return (False, summary or "(no output)")
 
 
-def _body_renderable(state: LiveState) -> Group | Text:
-    """Up nodes and command lines as Rich renderables; JSON in green panel under $ argv."""
+def _command_formatted_output(stdout: str, stderr: str) -> tuple[bool, str]:
+    """Return normalized command output payload for body rendering."""
+    return _is_json_output(stdout, stderr)
+
+
+def _render_body_color(state: LiveState) -> Group:
+    """Render body for color mode with rich panels for JSON output."""
     parts: list[Text | Panel | Padding] = []
     for node_id in state.up_nodes:
-        if state.use_color:
-            parts.append(Text.from_markup(f"  [green]✓[/green] up {node_id}"))
-        else:
-            parts.append(Text(f"  up {node_id}"))
+        parts.append(Text.from_markup(f"  [green]✓[/green] up {node_id}"))
     for cmd_id, argv, stdout, stderr in state.command_entries:
         argv_line = " ".join(argv) if argv else ""
-        if state.use_color:
-            parts.append(Text.from_markup(f"  [cyan]▶[/cyan] cmd {cmd_id}"))
-        else:
-            parts.append(Text(f"  cmd {cmd_id}"))
+        parts.append(Text.from_markup(f"  [cyan]▶[/cyan] cmd {cmd_id}"))
         parts.append(Text(f"     $ {argv_line}"))
-        is_json, formatted = _is_json_output(stdout, stderr)
-        if state.use_color and is_json:
+        is_json, formatted = _command_formatted_output(stdout, stderr)
+        if is_json:
             syntax = Syntax(formatted, "json", theme="monokai", indent_guides=True)
             panel = Panel(syntax, border_style="green", padding=(0, 1), expand=False)
             parts.append(Padding(panel, (0, 0, 0, 5)))
         else:
             parts.append(Text(f"     {formatted}"))
         parts.append(Text(""))
-    if not state.use_color:
-        lines: list[str] = []
-        for node_id in state.up_nodes:
-            lines.append(f"  up {node_id}")
-        for cmd_id, argv, stdout, stderr in state.command_entries:
-            argv_line = " ".join(argv) if argv else ""
-            _, formatted = _is_json_output(stdout, stderr)
-            lines.append(f"  cmd {cmd_id}")
-            lines.append(f"     $ {argv_line}")
-            lines.append(f"     {formatted}")
-            lines.append("")
-        return Text("\n".join(lines))
     return Group(*parts)
+
+
+def _render_body_plain(state: LiveState) -> Text:
+    """Render body for no-color mode as plain text lines."""
+    lines: list[str] = []
+    for node_id in state.up_nodes:
+        lines.append(f"  up {node_id}")
+    for cmd_id, argv, stdout, stderr in state.command_entries:
+        argv_line = " ".join(argv) if argv else ""
+        _, formatted = _command_formatted_output(stdout, stderr)
+        lines.append(f"  cmd {cmd_id}")
+        lines.append(f"     $ {argv_line}")
+        lines.append(f"     {formatted}")
+        lines.append("")
+    return Text("\n".join(lines))
+
+
+def _body_renderable(state: LiveState) -> Group | Text:
+    """Up nodes and command lines as Rich renderables; JSON in green panel under $ argv."""
+    if state.use_color:
+        return _render_body_color(state)
+    return _render_body_plain(state)
 
 
 def _one_line(stdout: str, stderr: str, max_len: int = 120) -> str:

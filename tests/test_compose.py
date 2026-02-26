@@ -6,6 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from testbed.compose import (
+    _compose_ps_snapshot,
     _run_with_optional_stream,
     compose_logs,
     compose_run,
@@ -114,3 +115,33 @@ def test_compose_run_with_on_line_calls_run_with_optional_stream(tmp_path: Path)
         compose_run(compose_path, "svc", on_line=on_line)
     m.assert_called_once()
     assert m.call_args.args[1] is on_line
+
+
+def test_compose_run_nonzero_returncode_22_appends_http_hint(tmp_path: Path) -> None:
+    """compose_run adds curl HTTP hint when returncode is 22."""
+    compose_path = tmp_path / "docker-compose.yaml"
+    compose_path.write_text("services: {}")
+    with patch("testbed.compose._run_with_optional_stream") as m:
+        m.return_value = ("out-body", "err-body", 22)
+        with pytest.raises(RuntimeError) as exc_info:
+            compose_run(compose_path, "check-0")
+    msg = str(exc_info.value)
+    assert "docker compose run check-0 failed" in msg
+    assert "Curl exit 22 = HTTP 4xx/5xx" in msg
+
+
+def test_compose_ps_snapshot_parses_json_array_output(tmp_path: Path) -> None:
+    """_compose_ps_snapshot parses array JSON output from docker compose ps."""
+    compose_path = tmp_path / "docker-compose.yaml"
+    compose_path.write_text("services: {}")
+    payload = (
+        '[{"Service":"api","State":"running","Health":"healthy","ExitCode":0},'
+        '{"Service":"worker","State":"exited","Health":"","ExitCode":1}]'
+    )
+    with patch("testbed.compose.subprocess.run") as m:
+        m.return_value = type("R", (), {"returncode": 0, "stdout": payload, "stderr": ""})()
+        snapshot = _compose_ps_snapshot(compose_path)
+    assert snapshot["services"] == [
+        {"service": "api", "state": "running", "health": "healthy", "exit_code": 0},
+        {"service": "worker", "state": "exited", "health": "", "exit_code": 1},
+    ]

@@ -131,6 +131,56 @@ def _emit(handler: EventHandler | None, kind: str, **payload: Any) -> None:
         handler(RunEvent(kind=kind, payload=dict(payload)))
 
 
+def _emit_command_ended(
+    event_handler: EventHandler | None,
+    *,
+    command_id: str,
+    argv: list[str],
+    success: bool,
+    stdout: str,
+    stderr: str,
+    error: str | None = None,
+) -> None:
+    """Emit normalized command_ended event payload."""
+    payload: dict[str, Any] = {
+        "command_id": command_id,
+        "argv": argv,
+        "success": success,
+        "stdout": stdout,
+        "stderr": stderr,
+    }
+    if error is not None:
+        payload["error"] = error
+    _emit(event_handler, "command_ended", **payload)
+
+
+def _run_command_once(
+    compose_path: Path,
+    service_name: str,
+    *,
+    verbose: bool,
+    no_deps: bool,
+    command_argv: list[str],
+    use_exec: bool,
+    detached: bool,
+) -> tuple[str, str]:
+    """Run one command attempt using compose_run or compose_exec."""
+    if use_exec:
+        return compose_exec(
+            compose_path,
+            service_name,
+            command_argv,
+            detached=detached,
+        )
+    return compose_run(
+        compose_path,
+        service_name,
+        verbose=verbose,
+        no_deps=no_deps,
+        command=command_argv,
+    )
+
+
 def _run_command_with_retry(
     compose_path: Path,
     command_id: str,
@@ -146,31 +196,25 @@ def _run_command_with_retry(
 ) -> tuple[bool, str, str, str | None]:
     """Run a service with retry policy. Returns (success, stdout, stderr, error_msg)."""
     last_out, last_err = "", ""
-    _emit(event_handler, "command_started", command_id=command_id, argv=command_argv or [])
+    argv = command_argv or []
+    _emit(event_handler, "command_started", command_id=command_id, argv=argv)
     for attempt in range(retry_attempts):
         if attempt > 0:
             time.sleep(retry_delay_s)
         try:
-            if use_exec:
-                last_out, last_err = compose_exec(
-                    compose_path,
-                    service_name,
-                    command_argv or [],
-                    detached=detached,
-                )
-            else:
-                last_out, last_err = compose_run(
-                    compose_path,
-                    service_name,
-                    verbose=verbose,
-                    no_deps=no_deps,
-                    command=command_argv,
-                )
-            _emit(
+            last_out, last_err = _run_command_once(
+                compose_path,
+                service_name,
+                verbose=verbose,
+                no_deps=no_deps,
+                command_argv=argv,
+                use_exec=use_exec,
+                detached=detached,
+            )
+            _emit_command_ended(
                 event_handler,
-                "command_ended",
                 command_id=command_id,
-                argv=command_argv or [],
+                argv=argv,
                 success=True,
                 stdout=last_out,
                 stderr=last_err,
@@ -184,32 +228,47 @@ def _run_command_with_retry(
                     retry_attempts,
                     exc,
                 )
-                _emit(
+                error_msg = (
+                    f"Command {command_id!r} failed after {retry_attempts} attempt(s): {exc}"
+                )
+                _emit_command_ended(
                     event_handler,
-                    "command_ended",
                     command_id=command_id,
-                    argv=command_argv or [],
+                    argv=argv,
                     success=False,
                     stdout=last_out,
                     stderr=last_err,
                     error=str(exc),
                 )
-                return (
-                    False,
-                    last_out,
-                    last_err,
-                    f"Command {command_id!r} failed after {retry_attempts} attempt(s): {exc}",
-                )
-    _emit(
-        event_handler,
-        "command_ended",
-        command_id=command_id,
-        argv=command_argv or [],
-        success=True,
-        stdout=last_out,
-        stderr=last_err,
-    )
+                return (False, last_out, last_err, error_msg)
     return (True, last_out, last_err, None)
+
+
+def _parse_http_check_output(out: str) -> tuple[str, int, str]:
+    """Parse http_check output into (status_text, status_code, body_preview)."""
+    lines = (out or "").strip().split("\n")
+    code_str = lines[-1].strip() if lines else ""
+    code = int(code_str) if code_str.isdigit() else 0
+    body_preview = ""
+    if len(lines) > 1:
+        body = "\n".join(lines[:-1]).strip()
+        body_preview = f". Response preview: {body[:400]!r}"
+    return (code_str, code, body_preview)
+
+
+def _finalize_check_failure(
+    event_handler: EventHandler | None,
+    *,
+    command_id: str,
+    url: str,
+    out: str,
+    err: str,
+    message: str,
+) -> tuple[bool, str, str, str]:
+    """Emit/log and return normalized check failure tuple."""
+    logger.error("%s", message)
+    _emit(event_handler, "check_failed", command_id=command_id, url=url, error=message)
+    return (False, out, err, message)
 
 
 def _run_check_service(
@@ -236,29 +295,38 @@ def _run_check_service(
             last_out, last_err = out, err
         except RuntimeError as exc:
             if attempt == retry_attempts - 1:
-                logger.error("Check %s failed: %s", url, exc)
-                _emit(event_handler, "check_failed", command_id=cid, url=url, error=str(exc))
-                return (False, last_out, last_err, str(exc))
+                return _finalize_check_failure(
+                    event_handler,
+                    command_id=cid,
+                    url=url,
+                    out=last_out,
+                    err=last_err,
+                    message=str(exc),
+                )
             continue
-        lines = (out or "").strip().split("\n")
-        code_str = lines[-1].strip() if lines else ""
-        code = int(code_str) if code_str.isdigit() else 0
+        code_str, code, body_preview = _parse_http_check_output(out)
         if 200 <= code < 300:
             _emit(event_handler, "check_passed", command_id=cid, url=url, status_code=code)
             return (True, out, err, None)
-        body_preview = ""
-        if len(lines) > 1:
-            body = "\n".join(lines[:-1]).strip()
-            body_preview = f". Response preview: {body[:400]!r}"
         if attempt == retry_attempts - 1:
             msg = f"Check failed: {url!r} returned HTTP {code_str}{body_preview}"
-            logger.error("%s", msg)
-            _emit(event_handler, "check_failed", command_id=cid, url=url, error=msg)
-            return (False, out, err, msg)
+            return _finalize_check_failure(
+                event_handler,
+                command_id=cid,
+                url=url,
+                out=out,
+                err=err,
+                message=msg,
+            )
     err_msg = f"Check failed: {url!r} returned no valid HTTP status"
-    logger.error("%s", err_msg)
-    _emit(event_handler, "check_failed", command_id=cid, url=url, error=err_msg)
-    return (False, last_out, last_err, err_msg)
+    return _finalize_check_failure(
+        event_handler,
+        command_id=cid,
+        url=url,
+        out=last_out,
+        err=last_err,
+        message=err_msg,
+    )
 
 
 def _gather_output_files(output_dir: Path) -> list[tuple[str, str]]:

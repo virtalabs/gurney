@@ -1,0 +1,38 @@
+---
+networks:
+  - name: clinical-vlan
+    cidr: 192.168.10.0/24
+
+nodes:
+  - name: postgres
+    kind: docker
+    image: postgres:16.6-alpine
+    network: clinical-vlan
+    ip: 192.168.10.2
+    environment:
+      POSTGRES_DB: blueflow
+      POSTGRES_USER: blueflow
+      POSTGRES_PASSWORD: testbed
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U blueflow"]
+      interval_s: 5
+      timeout_s: 3
+      retries: 5
+
+  - name: redis
+    kind: docker
+    image: redis:7.4-alpine
+    network: clinical-vlan
+    ip: 192.168.10.3
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval_s: 5
+      timeout_s: 3
+      retries: 5
+
+  - name: pacs-server
+    kind: docker
+    image: orthancteam/orthanc:25.12.3
+    network: clinical-vlan
+    ip: 192.168.10.10
+    ports: [4242, 8042]
