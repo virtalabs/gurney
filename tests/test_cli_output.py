@@ -340,6 +340,24 @@ def test_list_appended_json_emits_started_topology_completed() -> None:
     assert "scenario_count" in events[-1]["payload"]
 
 
+def test_list_non_json_routes_to_live_ui_when_tty() -> None:
+    """`testbed list` uses live UI renderer in interactive non-JSON mode."""
+    fake_index = SimpleNamespace(
+        topologies=[
+            SimpleNamespace(
+                id="demo",
+                scenarios=[SimpleNamespace(ref="demo/sample")],
+            )
+        ]
+    )
+    with patch("testbed.cli.get_or_build_index", return_value=(fake_index, False)), patch(
+        "testbed.cli.use_live_ui", return_value=True
+    ), patch("testbed.cli.render_list_with_live_ui") as m_live:
+        result = runner.invoke(app, ["list"])
+    assert result.exit_code == 0
+    m_live.assert_called_once()
+
+
 def test_pull_json_emits_progress_and_terminal_events() -> None:
     """`testbed --json pull` forwards reproduce progress events as NDJSON."""
     root = Path(__file__).resolve().parent.parent
@@ -360,6 +378,16 @@ def test_pull_json_emits_progress_and_terminal_events() -> None:
     assert events[0]["event"] == "started"
     assert any(event["event"] == "config_loaded" for event in events)
     assert events[-1]["event"] == "completed"
+
+
+def test_pull_non_json_routes_to_live_ui_when_tty() -> None:
+    """`testbed pull` uses live UI renderer in interactive non-JSON mode."""
+    with patch("testbed.cli._resolve_topology_id", return_value="demo"), patch(
+        "testbed.cli.use_live_ui", return_value=True
+    ), patch("testbed.cli.run_pull_with_live_ui") as m_live:
+        result = runner.invoke(app, ["pull", "demo"])
+    assert result.exit_code == 0
+    m_live.assert_called_once()
 
 
 def test_pull_appended_json_emits_progress_and_terminal_events() -> None:
@@ -391,6 +419,17 @@ def test_teardown_json_emits_started_completed() -> None:
     assert result.exit_code == 0
     events = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
     assert [event["event"] for event in events] == ["started", "completed"]
+
+
+def test_teardown_non_json_routes_to_live_ui_when_tty() -> None:
+    """`testbed teardown` uses live UI renderer in interactive non-JSON mode."""
+    with patch("testbed.cli.use_live_ui", return_value=True), patch(
+        "testbed.cli.run_teardown_with_live_ui"
+    ) as m_live, patch("testbed.cli.force_cleanup") as m_cleanup:
+        result = runner.invoke(app, ["teardown"])
+    assert result.exit_code == 0
+    m_live.assert_called_once()
+    m_cleanup.assert_not_called()
 
 
 def test_teardown_appended_json_emits_started_completed() -> None:

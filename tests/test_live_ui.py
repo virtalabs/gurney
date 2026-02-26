@@ -2,7 +2,7 @@
 
 from rich.console import Group
 from rich.padding import Padding
-from rich.panel import Panel
+from rich.syntax import Syntax
 from rich.text import Text
 
 from testbed.live_ui import LiveState, _body_renderable
@@ -26,7 +26,7 @@ def test_body_renderable_no_color_returns_text_with_sections() -> None:
 
 
 def test_body_renderable_color_returns_group() -> None:
-    """Color mode returns Group to support rich panel rendering."""
+    """Color mode returns Group with borderless syntax renderables."""
     state = LiveState(
         scenario_name="demo",
         use_color=True,
@@ -35,9 +35,9 @@ def test_body_renderable_color_returns_group() -> None:
     )
     rendered = _body_renderable(state)
     assert isinstance(rendered, Group)
-    panels = [
+    syntaxes = [
         item.renderable
         for item in rendered.renderables
-        if isinstance(item, Padding) and isinstance(item.renderable, Panel)
+        if isinstance(item, Padding) and isinstance(item.renderable, Syntax)
     ]
-    assert panels, "Expected panelized command/output renderables in color mode"
+    assert syntaxes, "Expected syntax-highlighted command/output renderables in color mode"

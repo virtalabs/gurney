@@ -33,7 +33,7 @@
       "timeout": "3s"
       "retries": !!int "5"
   "blueflow":
-    "image": "virtalabsinc/blueflow:testbed-3.0.0"
+    "image": "virtalabsinc/blueflow:testbed-3.0.1"
     "labels":
       "testbed.managed": "true"
     "networks":
