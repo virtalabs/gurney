@@ -3,6 +3,7 @@
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, Callable
 
 from rich.console import Console, Group
 from rich.live import Live
@@ -13,11 +14,18 @@ from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 
-from testbed.format_output import format_argv_for_display, format_command_output_one_line
-from testbed.runner import RunEvent, RunResult, run_scenario
+from gurney.format_output import (
+    format_argv_for_display,
+    format_command_output_one_line,
+)
+from gurney.runner import RunEvent, RunResult, run_scenario
 
 # ASCII banner line (no external font; simple box)
-BANNER_TITLE = "VirtaLabs Testbed"
+BANNER_TITLE: str = """
+ ♥ ♥ ♥  █▀▀ █ █ █▀█ █▀█ █▀▀ █ █  ♥ ♥ ♥
+ ♥ ♥ ♥  █▀█ █ █ █▀▄ █ █ █▀▀ ▀█▀  ♥ ♥ ♥
+ ♥ ♥ ♥  ▀▀▀ ▀▀▀ ▀ ▀ ▀ ▀ ▀▀▀  ▀   ♥ ♥ ♥
+"""
 
 
 @dataclass
@@ -33,16 +41,10 @@ class LiveState:
     use_color: bool = True
 
 
-def _banner_renderable(state: LiveState) -> Panel:
+def _main_title_renderable(title: str, state: LiveState) -> Padding:
     """Build the top banner panel."""
-    title = (
-        f"{BANNER_TITLE}  •  {state.scenario_name}"
-        if state.scenario_name
-        else BANNER_TITLE
-    )
-    return Panel(
-        Text(title, style="red"), border_style="blue", padding=(0, 2), expand=False
-    )
+    title_text = Text(title, style="red")
+    return Padding(Group(title_text), (0, 2, 0, 2), expand=False)
 
 
 def _progress_renderable(state: LiveState) -> Progress | None:
@@ -84,10 +86,9 @@ def _command_formatted_output(stdout: str, stderr: str) -> tuple[bool, str]:
 
 
 def _command_panel(argv_line: str) -> Padding:
-    """Render command line as a panel in live color mode."""
+    """Render command line in live color mode without a border."""
     syntax = Syntax(f"$ {argv_line}", "bash", theme="monokai", indent_guides=False)
-    panel = Panel(syntax, border_style="cyan", padding=(0, 1), expand=False)
-    return Padding(panel, (0, 0, 0, 5))
+    return Padding(syntax, (0, 0, 0, 5), expand=False)
 
 
 def _render_body_color(state: LiveState) -> Group:
@@ -102,8 +103,7 @@ def _render_body_color(state: LiveState) -> Group:
         is_json, formatted = _command_formatted_output(stdout, stderr)
         if is_json:
             syntax = Syntax(formatted, "json", theme="monokai", indent_guides=True)
-            panel = Panel(syntax, border_style="green", padding=(0, 1), expand=False)
-            parts.append(Padding(panel, (0, 0, 0, 5)))
+            parts.append(Padding(syntax, (0, 0, 0, 5), expand=False))
         else:
             parts.append(Text(f"     {formatted}"))
         parts.append(Text(""))
@@ -153,7 +153,7 @@ def _result_renderable(state: LiveState) -> Text | None:
 
 def _build_renderable(state: LiveState) -> Group:
     """Full layout: banner + progress + body + result."""
-    parts = [_banner_renderable(state)]
+    parts = [_main_title_renderable(BANNER_TITLE, state)]
     prog = _progress_renderable(state)
     if prog is not None:
         parts.append(prog)
@@ -226,14 +226,14 @@ def run_with_live_ui(
     use_color: bool = True,
 ) -> RunResult:
     """Run a scenario with live banner, progress, and streamed event output. Returns RunResult."""
-    from testbed.runner import load_scenario
+    from gurney.runner import load_scenario
 
     scenario = load_scenario(scenario_dir)
     state = LiveState(scenario_name=scenario.name, use_color=use_color)
     console = Console(force_terminal=use_color, no_color=not use_color)
 
     with Live(console=console, refresh_per_second=4, transient=False) as live:
-        live.update(_build_renderable(state))
+        live.update(_main_title_renderable(BANNER_TITLE, state))
         handler = _make_handler(state, live)
         result = run_scenario(
             scenario_dir,
@@ -246,3 +246,91 @@ def run_with_live_ui(
         state.phase = "done"
         live.update(_build_renderable(state))
     return result
+
+
+def render_list_with_live_ui(
+    topology_rows: list[tuple[str, list[str]]],
+    *,
+    use_color: bool = True,
+) -> None:
+    """Render list output in TUI style."""
+    state = LiveState(scenario_name="list", use_color=use_color)
+    body_lines: list[str] = []
+    for topology_id, scenario_refs in topology_rows:
+        body_lines.append(f"  topology {topology_id}")
+        for scenario_ref in scenario_refs:
+            body_lines.append(f"    - {scenario_ref}")
+        body_lines.append("")
+    body = Text("\n".join(body_lines).rstrip())
+    console = Console(force_terminal=use_color, no_color=not use_color)
+    console.print(_main_title_renderable(BANNER_TITLE, state))
+    if body.plain:
+        console.print(body)
+
+
+def run_pull_with_live_ui(
+    target: str,
+    topology_id: str,
+    pull_fn: Callable[..., Any],
+    *,
+    use_color: bool = True,
+) -> None:
+    """Run pull flow with live TUI updates."""
+    state = LiveState(scenario_name=f"pull {target}", use_color=use_color)
+    events: list[str] = []
+    state.phase = "commands"
+    console = Console(force_terminal=use_color, no_color=not use_color)
+
+    def _render() -> Group:
+        body_items: list[Text] = []
+        for line in events[-8:]:
+            body_items.append(Text(f"  {line}"))
+        parts: list[Any] = [_main_title_renderable(BANNER_TITLE, state)]
+        progress = _progress_renderable(state)
+        if progress is not None:
+            parts.append(progress)
+        if body_items:
+            parts.append(Group(*body_items))
+        if state.phase == "done":
+            parts.append(Text(f"PASS pull {topology_id}", style="bold green"))
+        return Group(*parts)
+
+    with Live(console=console, refresh_per_second=4, transient=False) as live:
+        live.update(_render())
+
+        def _pull_reporter(event: str, payload: dict[str, Any]) -> None:
+            filename = payload.get("filename")
+            if isinstance(filename, str):
+                events.append(f"{event}: {filename}")
+            else:
+                events.append(event)
+            live.update(_render())
+
+        pull_fn(topology_id, reporter=_pull_reporter, emit_text=False)
+        state.phase = "done"
+        live.update(_render())
+
+
+def run_teardown_with_live_ui(
+    teardown_fn: Callable[[], None],
+    *,
+    use_color: bool = True,
+) -> None:
+    """Run teardown with a simple live TUI status."""
+    state = LiveState(scenario_name="teardown", use_color=use_color, phase="commands")
+    console = Console(force_terminal=use_color, no_color=not use_color)
+    with Live(console=console, refresh_per_second=4, transient=False) as live:
+        live.update(
+            Group(
+                _main_title_renderable(BANNER_TITLE, state),
+                Text("  Removing gurney-managed resources..."),
+            )
+        )
+        teardown_fn()
+        state.phase = "done"
+        live.update(
+            Group(
+                _main_title_renderable(BANNER_TITLE, state),
+                Text("PASS teardown", style="bold green"),
+            )
+        )

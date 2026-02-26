@@ -98,6 +98,39 @@ wheels = [
 ]
 
 [[package]]
+name = "gurney"
+version = "0.2.0"
+source = { editable = "." }
+dependencies = [
+    { name = "pydantic" },
+    { name = "pyyaml" },
+    { name = "rich" },
+    { name = "typer" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "prospector" },
+    { name = "pytest" },
+    { name = "radon" },
+    { name = "ruff" },
+    { name = "yamllint" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "prospector", marker = "extra == 'dev'", specifier = ">=1.7" },
+    { name = "pydantic", specifier = ">=2.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "radon", marker = "extra == 'dev'", specifier = ">=6.0" },
+    { name = "rich", specifier = ">=13.0.0" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
+    { name = "typer", specifier = ">=0.12.0" },
+    { name = "yamllint", marker = "extra == 'dev'", specifier = ">=1.35" },
+]
+
+[[package]]
 name = "iniconfig"
 version = "2.3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -613,39 +646,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/75/a7/9810d872919697c9d01295633f5d574fb416d47e535f258272ca1f01f447/snowballstemmer-3.0.1.tar.gz", hash = "sha256:6d5eeeec8e9f84d4d56b847692bacf79bc2c8e90c7f80ca4444ff8b6f2e52895", size = 105575 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c8/78/3565d011c61f5a43488987ee32b6f3f656e7f107ac2782dd57bdd7d91d9a/snowballstemmer-3.0.1-py3-none-any.whl", hash = "sha256:6cd7b3897da8d6c9ffb968a6781fa6532dce9c3618a4b127d920dab764a19064", size = 103274 },
-]
-
-[[package]]
-name = "testbed"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "pydantic" },
-    { name = "pyyaml" },
-    { name = "rich" },
-    { name = "typer" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "prospector" },
-    { name = "pytest" },
-    { name = "radon" },
-    { name = "ruff" },
-    { name = "yamllint" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "prospector", marker = "extra == 'dev'", specifier = ">=1.7" },
-    { name = "pydantic", specifier = ">=2.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
-    { name = "pyyaml", specifier = ">=6.0" },
-    { name = "radon", marker = "extra == 'dev'", specifier = ">=6.0" },
-    { name = "rich", specifier = ">=13.0.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
-    { name = "typer", specifier = ">=0.12.0" },
-    { name = "yamllint", marker = "extra == 'dev'", specifier = ">=1.35" },
 ]
 
 [[package]]

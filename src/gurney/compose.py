@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 
 import yaml
 
-from testbed.models import (
+from gurney.models import (
     FactDef,
     NodeDef,
     ScenarioNodeDef,
@@ -93,7 +93,7 @@ def _build_networks(topology: TopologyConfig) -> dict:
                 "driver": "default",
                 "config": [{"subnet": net.cidr}],
             },
-            "labels": {"testbed.managed": "true"},
+            "labels": {"gurney.managed": "true"},
         }
         for net in topology.networks
     }
@@ -202,7 +202,7 @@ def _build_service(
     """Build service dict for a single node."""
     service: dict = {
         "image": _expand_image(node.image),
-        "labels": {"testbed.managed": "true"},
+        "labels": {"gurney.managed": "true"},
     }
     _apply_networking(service, node, network_mode, networks_override)
     _apply_optional_service_fields(
@@ -344,7 +344,7 @@ def _build_check_services(check_urls: list[str], topology: TopologyConfig) -> di
         condition = "service_healthy" if node.healthcheck else "service_started"
         service = {
             "image": CHECK_IMAGE,
-            "labels": {"testbed.managed": "true"},
+            "labels": {"gurney.managed": "true"},
             "command": CHECK_CURL_ARGS + [url],
             "depends_on": {hostname: {"condition": condition}},
             "networks": {node.network: {}},
@@ -535,7 +535,8 @@ def compose_up(
     on_line: StreamLineHandler | None = None,
 ) -> tuple[str, str]:
     """Run docker compose up -d --wait. If services given, only start those.
-    Always captures output; returns (stdout, stderr). Optional on_line called per line when set."""
+    Always captures output; returns (stdout, stderr). Optional on_line called per line when set.
+    """
     cmd = ["docker", "compose", "-f", str(compose_path), "up", "-d", "--wait"]
     if services:
         cmd.extend(services)
@@ -655,11 +656,11 @@ def compose_down(compose_path: Path) -> None:
 
 
 def force_cleanup() -> None:
-    """Remove all containers and networks with testbed.managed=true label."""
+    """Remove all containers and networks with gurney.managed=true label."""
     logger.debug("Force cleanup: removing testbed-managed containers and networks")
     # Stop and remove containers
     result = subprocess.run(
-        ["docker", "ps", "-aq", "--filter", "label=testbed.managed=true"],
+        ["docker", "ps", "-aq", "--filter", "label=gurney.managed=true"],
         capture_output=True,
         text=True,
     )
@@ -671,7 +672,7 @@ def force_cleanup() -> None:
 
     # Remove networks
     result = subprocess.run(
-        ["docker", "network", "ls", "-q", "--filter", "label=testbed.managed=true"],
+        ["docker", "network", "ls", "-q", "--filter", "label=gurney.managed=true"],
         capture_output=True,
         text=True,
     )

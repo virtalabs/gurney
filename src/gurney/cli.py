@@ -14,19 +14,24 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.text import Text
 
-from testbed.compose import force_cleanup
-from testbed.console import should_use_color, use_live_ui
-from testbed.format_output import (
+from gurney.compose import force_cleanup
+from gurney.console import should_use_color, use_live_ui
+from gurney.format_output import (
     format_argv_for_display,
     format_command_output,
     format_command_output_one_line,
     parse_command_output_as_json,
 )
-from testbed.live_ui import run_with_live_ui
-from testbed.reproduce import pull_and_verify
-from testbed.runner import run_scenario, RunResult
-from testbed.topology_index import get_or_build_index
-from testbed.utility import ensure_log_dir, logger
+from gurney.live_ui import (
+    render_list_with_live_ui,
+    run_pull_with_live_ui,
+    run_teardown_with_live_ui,
+    run_with_live_ui,
+)
+from gurney.reproduce import pull_and_verify
+from gurney.runner import run_scenario, RunResult
+from gurney.topology_index import get_or_build_index
+from gurney.utility import ensure_log_dir, logger
 
 VAR_LOG = Path("var") / "log"
 DEFAULT_OUTPUT_MAX_LINE = 120
@@ -39,17 +44,17 @@ CTX_JSON_KEY = "json_output"
 
 
 def _configure_logging() -> None:
-    """Configure testbed logging to ./var/log/testbed.log; create ./var/log if needed."""
+    """Configure gurney logging to ./var/log/gurney.log; create ./var/log if needed."""
     log_dir = ensure_log_dir(Path.cwd() / VAR_LOG)
-    log_file = log_dir / "testbed.log"
+    log_file = log_dir / "gurney.log"
     handler = logging.FileHandler(log_file, encoding="utf-8")
     handler.setFormatter(
         logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
     )
-    testbed_logger = logging.getLogger("testbed")
-    testbed_logger.setLevel(logging.DEBUG)
-    if not testbed_logger.handlers:
-        testbed_logger.addHandler(handler)
+    gurney_logger = logging.getLogger("gurney")
+    gurney_logger.setLevel(logging.DEBUG)
+    if not gurney_logger.handlers:
+        gurney_logger.addHandler(handler)
 
 
 def _one_line_summary(
@@ -71,12 +76,11 @@ def _print_command_output(
     indent: int = 5,
     verbose: bool = False,
 ) -> None:
-    """Print command output: green syntax-highlighted JSON panel when use_color and valid JSON, else plain text."""
+    """Print command output: syntax-highlighted JSON (no border) in color mode, else plain text."""
     is_json, formatted = parse_command_output_as_json(stdout, stderr)
     if use_color and is_json:
         syntax = Syntax(formatted, "json", theme="monokai", indent_guides=True)
-        panel = Panel(syntax, border_style="green", padding=(0, 1), expand=False)
-        Console().print(Padding(panel, (0, 0, 0, indent)))
+        Console().print(Padding(syntax, (0, 0, 0, indent)))
     elif verbose and not is_json:
         typer.echo(format_command_output(stdout, stderr, verbose=True))
     else:
@@ -149,7 +153,9 @@ def _echo_command_blocks(
         typer.echo(f"  cmd {command_id}")
         argv_line = format_argv_for_display(resolved_argv)
         typer.echo(f"     $ {argv_line}")
-        _print_command_output(stdout or "", stderr or "", use_color, indent=5, verbose=False)
+        _print_command_output(
+            stdout or "", stderr or "", use_color, indent=5, verbose=False
+        )
         typer.echo("")
 
 
@@ -225,11 +231,15 @@ def _emit_run_output(
     """Emit run output for live or classic mode."""
     if live_used:
         return  # live UI already printed output
-    should_show_verbose = verbose and result.passed and (
-        result.compose_up_stdout is not None
-        or result.compose_up_service_logs
-        or result.command_outputs
-        or result.output_files
+    should_show_verbose = (
+        verbose
+        and result.passed
+        and (
+            result.compose_up_stdout is not None
+            or result.compose_up_service_logs
+            or result.command_outputs
+            or result.output_files
+        )
     )
     if should_show_verbose:
         _echo_verbose_layers(result, use_color=use_color)
@@ -250,14 +260,18 @@ def _resolve_json_mode(ctx: typer.Context, command_json_output: bool) -> bool:
     return root_json_output or command_json_output
 
 
-def _emit_ndjson(command: str, event: str, payload: dict[str, Any] | None = None) -> None:
+def _emit_ndjson(
+    command: str, event: str, payload: dict[str, Any] | None = None
+) -> None:
     envelope: dict[str, Any] = {"event": event, "command": command, "ts": _ts_utc()}
     if payload is not None:
         envelope["payload"] = payload
     typer.echo(json.dumps(envelope, separators=(",", ":")))
 
 
-def _render_list_human(use_color: bool, topology_rows: list[tuple[str, list[str]]]) -> None:
+def _render_list_human(
+    use_color: bool, topology_rows: list[tuple[str, list[str]]]
+) -> None:
     if not use_color:
         typer.echo("Available scenarios:")
         for topology_id, scenario_refs in topology_rows:
@@ -267,7 +281,7 @@ def _render_list_human(use_color: bool, topology_rows: list[tuple[str, list[str]
         return
 
     header = Text("VirtaLabs Testbed  •  Available scenarios", style="bold red")
-    Console().print(Panel(header, border_style="blue", padding=(0, 1), expand=False))
+    Console().print(Panel.fit(header, border_style="blue", padding=(0, 1)))
     for topology_id, scenario_refs in topology_rows:
         typer.echo(f"  topology {topology_id}")
         for scenario_ref in scenario_refs:
@@ -277,6 +291,7 @@ def _render_list_human(use_color: bool, topology_rows: list[tuple[str, list[str]
 
 app = typer.Typer(
     context_settings={"help_option_names": ["-h", "--help"]},
+    no_args_is_help=True,
 )
 
 
@@ -365,7 +380,7 @@ def run(
         run_failed = not result.passed
     elif live_used:
         result = run_with_live_ui(
-            scenario_dir,
+            scenario_dir=scenario_dir,
             keep=keep,
             verbose=verbose,
             project_root=project_root,
@@ -442,7 +457,12 @@ def list_scenarios(
         )
         return
 
-    _render_list_human(should_use_color(False), topology_rows)
+    use_color = should_use_color(False)
+    live_used = use_live_ui() and not json_mode
+    if live_used:
+        render_list_with_live_ui(topology_rows, use_color=use_color)
+        return
+    _render_list_human(use_color, topology_rows)
 
 
 @app.command()
@@ -467,8 +487,12 @@ def pull(
             typer.echo(str(exc), err=True)
         raise typer.Exit(1) from exc
     try:
+        use_color = should_use_color(False)
+        live_used = use_live_ui() and not json_mode
         if json_mode:
-            _emit_ndjson("pull", "started", {"target": target, "topology_id": topology_id})
+            _emit_ndjson(
+                "pull", "started", {"target": target, "topology_id": topology_id}
+            )
 
             def _pull_reporter(event: str, payload: dict[str, Any]) -> None:
                 _emit_ndjson("pull", event, payload)
@@ -477,10 +501,21 @@ def pull(
             _emit_ndjson("pull", "completed", {"topology_id": topology_id})
             return
 
+        if live_used:
+            run_pull_with_live_ui(
+                target,
+                topology_id,
+                pull_and_verify,
+                use_color=use_color,
+            )
+            return
+
         pull_and_verify(topology_id)
     except (RuntimeError, subprocess.CalledProcessError) as exc:
         if json_mode:
-            _emit_ndjson("pull", "failed", {"error": str(exc), "topology_id": topology_id})
+            _emit_ndjson(
+                "pull", "failed", {"error": str(exc), "topology_id": topology_id}
+            )
             raise typer.Exit(1) from exc
         typer.echo(str(exc), err=True)
         raise typer.Exit(1) from exc
@@ -495,9 +530,15 @@ def teardown(
 ) -> None:
     """Force-remove all testbed-managed Docker resources."""
     json_mode = _resolve_json_mode(ctx, json_output)
+    live_used = use_live_ui() and not json_mode
     if json_mode:
         _emit_ndjson("teardown", "started")
-    force_cleanup()
+        force_cleanup()
+    elif live_used:
+        run_teardown_with_live_ui(force_cleanup, use_color=should_use_color(False))
+        return
+    else:
+        force_cleanup()
     if json_mode:
         _emit_ndjson("teardown", "completed")
         return

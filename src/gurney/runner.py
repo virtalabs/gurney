@@ -10,7 +10,7 @@ from typing import Any, Callable
 
 import yaml
 
-from testbed.compose import (
+from gurney.compose import (
     compose_down,
     compose_exec,
     compose_logs,
@@ -18,7 +18,7 @@ from testbed.compose import (
     compose_up,
     generate_compose,
 )
-from testbed.models import (
+from gurney.models import (
     ArgvArtifactRef,
     NodeDef,
     ScenarioConfig,
@@ -26,7 +26,7 @@ from testbed.models import (
     TopologyConfig,
     resolve_argv,
 )
-from testbed.utility import ensure_log_dir
+from gurney.utility import ensure_log_dir
 
 logger = logging.getLogger(__name__)
 
@@ -237,9 +237,7 @@ def _run_command_with_retry(
                     retry_attempts,
                     exc,
                 )
-                error_msg = (
-                    f"Command {command_id!r} failed after {retry_attempts} attempt(s): {exc}"
-                )
+                error_msg = f"Command {command_id!r} failed after {retry_attempts} attempt(s): {exc}"
                 _emit_command_ended(
                     event_handler,
                     command_id=command_id,
@@ -315,7 +313,9 @@ def _run_check_service(
             continue
         code_str, code, body_preview = _parse_http_check_output(out)
         if 200 <= code < 300:
-            _emit(event_handler, "check_passed", command_id=cid, url=url, status_code=code)
+            _emit(
+                event_handler, "check_passed", command_id=cid, url=url, status_code=code
+            )
             return (True, out, err, None)
         if attempt == retry_attempts - 1:
             msg = f"Check failed: {url!r} returned HTTP {code_str}{body_preview}"
@@ -417,6 +417,7 @@ def _validate_artifact_grants_against_topology(
                     f"{artifact_id!r} but it is not granted in nodes[].artifacts."
                 )
 
+
 def _topology_id_from_topology_file(topology_file: str) -> str | None:
     """Extract topology id from path like topologies/<topology-id>/topology.yaml."""
     parts = Path(topology_file).parts
@@ -470,7 +471,9 @@ def _stage_required_artifacts(
         fixture_path = fixture_root / filename if fixture_root else None
         if fixture_path is not None and fixture_path.is_file():
             cache_path.parent.mkdir(parents=True, exist_ok=True)
-            if not cache_path.exists() or not cmp(fixture_path, cache_path, shallow=False):
+            if not cache_path.exists() or not cmp(
+                fixture_path, cache_path, shallow=False
+            ):
                 shutil.copy2(fixture_path, cache_path)
             continue
         if cache_path.is_file():
