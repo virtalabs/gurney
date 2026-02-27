@@ -21,6 +21,7 @@ uv run gurney pull blueflow-local
 uv run gurney run <topology-id>/<scenario-id>
 uv run gurney --json run <topology-id>/<scenario-id>
 uv run gurney run <topology-id>/<scenario-id> --json
+uv run gurney validate   # validate topology/scenario/config YAML against JSON Schemas
 ```
 
 Or use the `gurney` CLI after install: `gurney list`, `gurney run <topology-id>/<scenario-id>`, `gurney --json run <topology-id>/<scenario-id>`.
@@ -41,6 +42,11 @@ topologies/
     scenarios/
       <scenario-id>/
         scenario.yaml
+
+schemas/
+  topology.schema.json
+  scenario.schema.json
+  config.schema.json
 
 var/
   artifacts/

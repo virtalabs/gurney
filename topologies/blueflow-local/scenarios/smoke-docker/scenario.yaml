@@ -1,7 +1,9 @@
+# yaml-language-server: $schema=../../../../schemas/scenario.schema.json
+# OBJ-2 Smoke Docker Verification
+# This scenario is used to verify that the BlueFlow Docker image can be built and run.
+---
 name: smoke-docker
 topology: topologies/blueflow-local/topology.yaml
-
-facts: []
 
 nodes:
   - id: postgres
@@ -22,5 +24,3 @@ nodes:
   - id: pacs-server
     build: up
     networks: [clinical-vlan]
-
-commands: []

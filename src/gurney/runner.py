@@ -26,6 +26,7 @@ from gurney.models import (
     TopologyConfig,
     resolve_argv,
 )
+from gurney.schema_validation import validate_scenario_file, validate_topology_file
 from gurney.utility import ensure_log_dir
 
 logger = logging.getLogger(__name__)
@@ -77,6 +78,7 @@ def load_scenario(scenario_dir: Path) -> ScenarioConfig:
         raise FileNotFoundError(f"scenario.yaml not found in {scenario_dir}")
     with open(path) as f:
         data = yaml.safe_load(f) or {}
+    validate_scenario_file(path)
     logger.debug("Loaded scenario from %s", path)
     return ScenarioConfig(**data)
 
@@ -89,6 +91,7 @@ def load_topology(topology_file: str, base_dir: Path | None = None) -> TopologyC
         raise FileNotFoundError(f"Topology file not found: {path}")
     with open(path) as f:
         data = yaml.safe_load(f) or {}
+    validate_topology_file(path)
     logger.debug("Loaded topology from %s", path)
     return TopologyConfig(**data)
 

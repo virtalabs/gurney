@@ -1,0 +1,172 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://virtalabs.com/gurney/topology.schema.json",
+  "title": "TopologyConfig",
+  "description": "Schema for testbed topology.yaml files used by gurney.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["networks", "nodes"],
+  "properties": {
+    "networks": {
+      "type": "array",
+      "description": "Network definitions for the topology.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "cidr"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Logical name of the network."
+          },
+          "cidr": {
+            "type": "string",
+            "description": "CIDR notation for the network (e.g. 192.168.10.0/24)."
+          },
+          "vlan_id": {
+            "type": "integer",
+            "description": "Optional VLAN identifier for the network."
+          }
+        }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "description": "Topology-scoped artifact catalog (e.g. PCAP files).",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "kind", "filename", "url"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique artifact identifier."
+          },
+          "kind": {
+            "type": "string",
+            "enum": ["pcap"],
+            "description": "Artifact kind. Currently only 'pcap' is supported."
+          },
+          "filename": {
+            "type": "string",
+            "description": "Filename used when staging the artifact locally."
+          },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "Source URL for downloading the artifact."
+          },
+          "sha256": {
+            "type": ["string", "null"],
+            "description": "Optional SHA256 checksum for integrity verification."
+          }
+        }
+      }
+    },
+    "nodes": {
+      "type": "array",
+      "description": "Concrete nodes (typically Docker services) in the topology.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "kind", "image", "network"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Node name, referenced by scenarios."
+          },
+          "kind": {
+            "type": "string",
+            "enum": ["docker"],
+            "description": "Node kind. Currently only 'docker' is supported."
+          },
+          "image": {
+            "type": "string",
+            "description": "Docker image reference."
+          },
+          "network": {
+            "type": "string",
+            "description": "Name of the network this node attaches to."
+          },
+          "ip": {
+            "type": ["string", "null"],
+            "description": "Optional static IP address within the network CIDR."
+          },
+          "ports": {
+            "type": "array",
+            "description": "Optional list of ports to expose.",
+            "items": {
+              "type": "integer"
+            }
+          },
+          "environment": {
+            "type": "object",
+            "description": "Environment variables injected into the container.",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "command": {
+            "type": ["string", "null"],
+            "description": "Optional container command override."
+          },
+          "depends_on": {
+            "type": "array",
+            "description": "Names of nodes this node depends on.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "healthcheck": {
+            "description": "Optional Docker health check configuration.",
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["test"],
+                "properties": {
+                  "test": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "interval_s": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "timeout_s": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "retries": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              }
+            ]
+          },
+          "volumes": {
+            "type": "array",
+            "description": "Optional list of volume mounts.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "cap_add": {
+            "type": "array",
+            "description": "Optional Linux capabilities to add (e.g. NET_ADMIN).",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  }
+}
+

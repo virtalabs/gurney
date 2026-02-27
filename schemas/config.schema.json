@@ -1,0 +1,45 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://virtalabs.com/gurney/config.schema.json",
+  "title": "ReproduceConfig",
+  "description": "Schema for topology-scoped config.yaml files used by pull/verify.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["locked_images", "local_images", "login_required_images"],
+  "properties": {
+    "locked_images": {
+      "type": "array",
+      "description": "Images whose digests are recorded and must remain stable.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "local_images": {
+      "type": "array",
+      "description": "Images built from local Dockerfiles.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["dockerfile", "tag"],
+        "properties": {
+          "dockerfile": {
+            "type": "string",
+            "description": "Dockerfile name under ./docker/."
+          },
+          "tag": {
+            "type": "string",
+            "description": "Resulting local image tag."
+          }
+        }
+      }
+    },
+    "login_required_images": {
+      "type": "array",
+      "description": "Images that may require docker login and are skipped if pull fails.",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}
+

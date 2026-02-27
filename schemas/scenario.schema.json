@@ -1,0 +1,185 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://virtalabs.com/gurney/scenario.schema.json",
+  "title": "ScenarioConfig",
+  "description": "Schema for scenario.yaml files used by gurney.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "nodes"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Scenario identifier."
+    },
+    "topology": {
+      "type": "string",
+      "description": "Path to the topology.yaml used by this scenario."
+    },
+    "facts": {
+      "type": "array",
+      "description": "Named facts that can be referenced by commands or env_from_fact.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "value"],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "value": {
+            "description": "Scalar value or mapping for env_from_fact.",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "nodes": {
+      "type": "array",
+      "description": "Scenario nodes specifying build order and network/span behavior.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "build"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Node id, must match a topology node name."
+          },
+          "build": {
+            "type": "string",
+            "enum": ["up", "run"],
+            "description": "Whether this node is part of long-running services ('up') or a one-off ('run')."
+          },
+          "networks": {
+            "description": "Optional list of networks this node attaches to (mutually exclusive with span).",
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            ]
+          },
+          "span": {
+            "description": "Optional span target node id (mutually exclusive with networks).",
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          },
+          "env_from_fact": {
+            "description": "Optional fact name whose value is a mapping of env vars.",
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          },
+          "artifacts": {
+            "type": "array",
+            "description": "Artifact ids this node is allowed to use.",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "commands": {
+      "type": "array",
+      "description": "Commands to run against nodes in order.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "node", "run", "retry"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Command identifier."
+          },
+          "node": {
+            "type": "string",
+            "description": "Scenario node id this command runs on."
+          },
+          "run": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["argv"],
+            "properties": {
+              "argv": {
+                "type": "array",
+                "description": "Command and arguments, with optional fact/artifact refs.",
+                "items": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": ["fact"],
+                      "properties": {
+                        "fact": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": ["artifact"],
+                      "properties": {
+                        "artifact": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              "detached": {
+                "type": "boolean",
+                "description": "If true, run the command in detached mode (for up nodes)."
+              }
+            }
+          },
+          "retry": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "attempts": {
+                "type": "integer",
+                "minimum": 1,
+                "default": 1
+              },
+              "delay_s": {
+                "type": "number",
+                "minimum": 0,
+                "default": 0.0
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+

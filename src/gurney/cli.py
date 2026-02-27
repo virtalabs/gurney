@@ -26,10 +26,12 @@ from gurney.live_ui import (
     render_list_with_live_ui,
     run_pull_with_live_ui,
     run_teardown_with_live_ui,
+    run_validate_with_live_ui,
     run_with_live_ui,
 )
 from gurney.reproduce import pull_and_verify
 from gurney.runner import run_scenario, RunResult
+from gurney.schema_validation import validate_all
 from gurney.topology_index import get_or_build_index
 from gurney.utility import ensure_log_dir, logger
 
@@ -543,6 +545,68 @@ def teardown(
         _emit_ndjson("teardown", "completed")
         return
     typer.echo("Teardown complete.")
+
+
+@app.command()
+def validate(
+    ctx: typer.Context,
+    no_color: bool = typer.Option(
+        False,
+        "--no-color",
+        help="Disable colored output (also respects NO_COLOR env).",
+    ),
+) -> None:
+    """Validate topologies, scenarios, and configs against JSON Schemas."""
+    project_root = Path.cwd()
+    use_color = should_use_color(no_color)
+    json_mode = bool((ctx.obj or {}).get(CTX_JSON_KEY, False))
+
+    if json_mode:
+        results = validate_all(project_root)
+        if not results:
+            _emit_ndjson("validate", "completed", {"message": "No files found"})
+            return
+        had_errors = any(err is not None for _, err in results)
+        for path, error in results:
+            rel = path.relative_to(project_root).as_posix()
+            _emit_ndjson(
+                "validate",
+                "file" if error is None else "error",
+                {"path": rel, "error": error} if error else {"path": rel},
+            )
+        _emit_ndjson(
+            "validate",
+            "failed" if had_errors else "completed",
+            {"had_errors": had_errors} if had_errors else {},
+        )
+        if had_errors:
+            raise typer.Exit(1)
+        return
+
+    if use_live_ui():
+        had_errors = run_validate_with_live_ui(project_root, use_color=use_color)
+        if had_errors:
+            raise typer.Exit(1)
+        return
+
+    results = validate_all(project_root)
+    if not results:
+        typer.echo("No topology, scenario, or config files found under ./topologies.")
+        return
+
+    had_errors = False
+    for path, error in results:
+        rel = path.relative_to(project_root)
+        if error is None:
+            typer.echo(f"OK   {rel}")
+        else:
+            had_errors = True
+            typer.echo(f"FAIL {rel}")
+            typer.echo(error, err=True)
+            typer.echo("")
+
+    if had_errors:
+        raise typer.Exit(1)
 
 
 if __name__ == "__main__":
