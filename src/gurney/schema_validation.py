@@ -6,6 +6,9 @@ import json
 from pathlib import Path
 from typing import Any, Iterable, Tuple
 
+# Optional project root for schema resolution; None means Path.cwd()
+ProjectRoot = Path | None
+
 import yaml
 from jsonschema import Draft7Validator
 
@@ -18,9 +21,9 @@ def _load_yaml(path: Path) -> Any:
         return yaml.safe_load(f) or {}
 
 
-def _load_schema(schema_name: str) -> dict[str, Any]:
-    project_root = Path.cwd()
-    path = project_root / SCHEMAS_DIR / schema_name
+def _load_schema(schema_name: str, project_root: ProjectRoot = None) -> dict[str, Any]:
+    root = project_root or Path.cwd()
+    path = root / SCHEMAS_DIR / schema_name
     if not path.exists():
         raise FileNotFoundError(f"Schema file not found: {path}")
     with path.open(encoding="utf-8") as f:
@@ -41,8 +44,9 @@ def _validate_against_schema(
     *,
     schema_name: str,
     source: Path,
+    project_root: ProjectRoot = None,
 ) -> None:
-    schema = _load_schema(schema_name)
+    schema = _load_schema(schema_name, project_root=project_root)
     validator = Draft7Validator(schema)
     errors = sorted(validator.iter_errors(data), key=lambda e: list(e.path))
     if not errors:
@@ -51,22 +55,37 @@ def _validate_against_schema(
     raise ValueError(f"Schema validation failed for {source}:\n{formatted}")
 
 
-def validate_topology_file(path: Path) -> None:
+def validate_topology_file(path: Path, project_root: ProjectRoot = None) -> None:
     """Validate a topology.yaml file against topology.schema.json."""
     data = _load_yaml(path)
-    _validate_against_schema(data, schema_name="topology.schema.json", source=path)
+    _validate_against_schema(
+        data,
+        schema_name="topology.schema.json",
+        source=path,
+        project_root=project_root,
+    )
 
 
-def validate_scenario_file(path: Path) -> None:
+def validate_scenario_file(path: Path, project_root: ProjectRoot = None) -> None:
     """Validate a scenario.yaml file against scenario.schema.json."""
     data = _load_yaml(path)
-    _validate_against_schema(data, schema_name="scenario.schema.json", source=path)
+    _validate_against_schema(
+        data,
+        schema_name="scenario.schema.json",
+        source=path,
+        project_root=project_root,
+    )
 
 
-def validate_config_file(path: Path) -> None:
+def validate_config_file(path: Path, project_root: ProjectRoot = None) -> None:
     """Validate a config.yaml file against config.schema.json."""
     data = _load_yaml(path)
-    _validate_against_schema(data, schema_name="config.schema.json", source=path)
+    _validate_against_schema(
+        data,
+        schema_name="config.schema.json",
+        source=path,
+        project_root=project_root,
+    )
 
 
 def validate_all(project_root: Path) -> list[Tuple[Path, str | None]]:
@@ -92,21 +111,21 @@ def validate_all(project_root: Path) -> list[Tuple[Path, str | None]]:
 
     for path in topology_files:
         try:
-            validate_topology_file(path)
+            validate_topology_file(path, project_root=project_root)
             results.append((path, None))
         except Exception as exc:  # noqa: BLE001
             results.append((path, str(exc)))
 
     for path in scenario_files:
         try:
-            validate_scenario_file(path)
+            validate_scenario_file(path, project_root=project_root)
             results.append((path, None))
         except Exception as exc:  # noqa: BLE001
             results.append((path, str(exc)))
 
     for path in config_files:
         try:
-            validate_config_file(path)
+            validate_config_file(path, project_root=project_root)
             results.append((path, None))
         except Exception as exc:  # noqa: BLE001
             results.append((path, str(exc)))
