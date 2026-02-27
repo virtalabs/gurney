@@ -100,7 +100,26 @@
               "type": "string"
             }
           }
-        }
+        },
+        "allOf": [
+          {
+            "not": {
+              "required": ["networks", "span"],
+              "properties": {
+                "networks": {
+                  "not": {
+                    "type": "null"
+                  }
+                },
+                "span": {
+                  "not": {
+                    "type": "null"
+                  }
+                }
+              }
+            }
+          }
+        ]
       }
     },
     "commands": {
