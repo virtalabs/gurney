@@ -19,6 +19,7 @@ from gurney.format_output import (
     format_command_output_one_line,
 )
 from gurney.runner import RunEvent, RunResult, run_scenario
+from gurney.schema_validation import validate_all
 
 # ASCII banner line (no external font; simple box)
 BANNER_TITLE: str = """
@@ -334,3 +335,62 @@ def run_teardown_with_live_ui(
                 Text("PASS teardown", style="bold green"),
             )
         )
+
+
+def run_validate_with_live_ui(
+    project_root: Path,
+    *,
+    use_color: bool = True,
+) -> bool:
+    """Run schema validation with live TUI. Returns True if any file failed validation."""
+    state = LiveState(scenario_name="validate", use_color=use_color, phase="commands")
+    console = Console(force_terminal=use_color, no_color=not use_color)
+
+    def _render_body(results: list[tuple[Path, str | None]]) -> Group | Text:
+        parts: list[Text] = []
+        for path, error in results:
+            rel = path.relative_to(project_root)
+            if error is None:
+                if use_color:
+                    parts.append(Text.from_markup(f"  [green]✓[/green] {rel}"))
+                else:
+                    parts.append(Text(f"  OK   {rel}"))
+            else:
+                first_line = (error.strip().split("\n")[0] or "")[:100]
+                if use_color:
+                    parts.append(Text.from_markup(f"  [red]✗[/red] {rel}"))
+                    parts.append(Text(f"     {first_line}", style="red"))
+                else:
+                    parts.append(Text(f"  FAIL {rel}"))
+                    parts.append(Text(f"     {first_line}"))
+        return Group(*parts) if parts else Text("  No topology, scenario, or config files found.")
+
+    def _render(
+        results: list[tuple[Path, str | None]] | None = None,
+        phase: str = "commands",
+        had_errors: bool = False,
+    ) -> Group:
+        result_list = results or []
+        state.phase = phase
+        parts: list[Any] = [_main_title_renderable(BANNER_TITLE, state)]
+        if phase == "commands" and not result_list:
+            progress = _progress_renderable(state)
+            if progress is not None:
+                parts.append(progress)
+            parts.append(Text("  Validating..."))
+        else:
+            parts.append(_render_body(result_list))
+            if phase == "done":
+                if had_errors:
+                    parts.append(Text("FAIL validate", style="bold red"))
+                else:
+                    parts.append(Text("PASS validate", style="bold green"))
+        return Group(*parts)
+
+    with Live(console=console, refresh_per_second=4, transient=False) as live:
+        live.update(_render())
+        results = validate_all(project_root)
+        had_errors = any(err is not None for _, err in results)
+        state.phase = "done"
+        live.update(_render(results=results, phase="done", had_errors=had_errors))
+    return had_errors

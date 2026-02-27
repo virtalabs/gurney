@@ -1,3 +1,7 @@
+# yaml-language-server: $schema=../../../../schemas/scenario.schema.json
+# OBJ-2 Small Clinic Verification
+# This scenario is used to verify that BlueFlow can discover DICOM assets from a pcap file.
+---
 name: small-clinic
 topology: topologies/blueflow-local/topology.yaml
 

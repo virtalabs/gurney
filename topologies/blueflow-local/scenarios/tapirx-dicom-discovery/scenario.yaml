@@ -1,5 +1,7 @@
+# yaml-language-server: $schema=../../../../schemas/scenario.schema.json
 # OBJ-2 TapirX DICOM Discovery Verification 
 # This scenario is used to verify that TapirX can discover DICOM assets from a pcap file.
+---
 name: tapirx-dicom-pcap-replay
 topology: topologies/blueflow-local/topology.yaml
 
