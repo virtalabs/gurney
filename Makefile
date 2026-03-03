@@ -12,7 +12,7 @@ pull:
 		echo "Usage: make pull TOPOLOGY=<topology-id>"; \
 		exit 2; \
 	fi
-	@uv run python -c "from testbed.reproduce import pull_and_verify; pull_and_verify(\"$(TOPOLOGY)\")"
+	@uv run python -c "from gurney.reproduce import pull_and_verify; pull_and_verify(\"$(TOPOLOGY)\")"
 
 test:
 	uv run pytest -v -m "not slow"
