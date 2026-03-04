@@ -2,7 +2,7 @@ locked_images:
   - postgres:16.6-alpine
   - redis:7.4-alpine
   - orthancteam/orthanc:25.12.3
-  - virtalabsinc/blueflow:testbed-3.0.1
+  - virtalabsinc/blueflow:testbed-3.0.2
 
 local_images:
   - dockerfile: tapirx.Dockerfile

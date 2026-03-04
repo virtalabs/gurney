@@ -7,12 +7,24 @@ topology: topologies/blueflow-local/topology.yaml
 
 facts:
   - name: assets_url
-    value: http://blueflow:8000/api/assets/1/
+    value: http://blueflow:8000/api/assets/
   - name: upsert_url
     value: http://blueflow:8000/api/assets/upsert/
-  - name: asset_tags_url
-    value: http://blueflow:8000/api/assets/1/tags/
   - name: blueflow_api_env
+    value:
+      RUN_MIGRATIONS: "1"
+      DJANGO_ALLOWED_HOSTS: blueflow,localhost,127.0.0.1
+      DEFAULT_USERNAME: admin
+      DEFAULT_PASSWORD: admin
+      DJANGO_DEBUG: true
+      DJANGO_SETTINGS_MODULE: project.settings.development
+      DATABASE_URL: postgresql://blueflow:testbed@192.168.10.2:5432/blueflow
+      REDIS_URL: redis://192.168.10.3:6379/0
+      CELERY_BROKER_URL: redis://192.168.10.3:6379/0
+      SECRET_KEY: testbed-only-not-for-production
+      CELERY_TASK_ALWAYS_EAGER: "false"
+      BLUEFLOW_BASE_URL: http://blueflow:8000
+  - name: celery_worker_env
     value:
       DJANGO_ALLOWED_HOSTS: blueflow,localhost,127.0.0.1
       DEFAULT_USERNAME: admin
@@ -21,8 +33,16 @@ facts:
       DJANGO_SETTINGS_MODULE: project.settings.development
       DATABASE_URL: postgresql://blueflow:testbed@192.168.10.2:5432/blueflow
       REDIS_URL: redis://192.168.10.3:6379/0
+      CELERY_BROKER_URL: redis://192.168.10.3:6379/0
       SECRET_KEY: testbed-only-not-for-production
-      CELERY_TASK_ALWAYS_EAGER: "true"
+      CELERY_TASK_ALWAYS_EAGER: "false"
+      BLUEFLOW_BASE_URL: http://blueflow:8000
+  - name: webhook_api_endpoint
+    value: http://blueflow:8000/api/viper/webhook/
+  - name: webhook_url
+    value: https://webhook.site/49df6c4c-17e0-4cfe-a6a1-2eca9ef5b0c9
+  - name: webhook_requests_url
+    value: https://webhook.site/token/49df6c4c-17e0-4cfe-a6a1-2eca9ef5b0c9/requests
 
 nodes:
   - id: postgres
@@ -34,6 +54,11 @@ nodes:
     networks: [clinical-vlan]
 
   - id: blueflow
+    build: up
+    networks: [clinical-vlan]
+    env_from_fact: blueflow_api_env
+
+  - id: celery-worker
     build: up
     networks: [clinical-vlan]
     env_from_fact: blueflow_api_env
@@ -59,6 +84,26 @@ nodes:
     span: tapirx
 
 commands:
+
+  - id: register-webhook
+    node: replay
+    run:
+      argv:
+        - sh
+        - -lc
+        - |
+          set -eu
+          WEBHOOK_API_ENDPOINT="$1"
+          WEBHOOK_URL="$2"
+          curl -sS -X POST "$WEBHOOK_API_ENDPOINT" \
+            -H "Content-Type: application/json" \
+            -d "{\"last_sync\":\"2020-01-01T00:00:00Z\",\"not_after\":\"2030-01-01T00:00:00Z\",\"page\":1,\"page_size\":10,\"webhook_url\":\"$WEBHOOK_URL\",\"auth_token\":\"\"}"
+        - skip-argv0
+        - { fact: webhook_api_endpoint }
+        - { fact: webhook_url }
+    retry:
+      attempts: 3
+      delay_s: 5
 
   - id: emulate-tap-device
     node: tapirx
@@ -119,6 +164,16 @@ commands:
       argv:
         - curl
         - { fact: assets_url }
+    retry:
+      attempts: 2
+      delay_s: 2
+
+  - id: get-remote-assets
+    node: replay
+    run:
+      argv:
+        - curl
+        - { fact: webhook_requests_url }
     retry:
       attempts: 2
       delay_s: 2

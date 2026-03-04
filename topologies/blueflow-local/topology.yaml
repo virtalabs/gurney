@@ -40,7 +40,7 @@ nodes:
 
   - name: blueflow
     kind: docker
-    image: virtalabsinc/blueflow:testbed-3.0.1
+    image: virtalabsinc/blueflow:testbed-3.0.2
     network: clinical-vlan
     ip: 192.168.10.4
     ports: [8000]
@@ -58,7 +58,7 @@ nodes:
 
   - name: celery-worker
     kind: docker
-    image: virtalabsinc/blueflow:testbed-3.0.1
+    image: virtalabsinc/blueflow:testbed-3.0.2
     network: clinical-vlan
     ip: 192.168.10.5
     depends_on: [postgres, redis, blueflow]

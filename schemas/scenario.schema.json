@@ -5,7 +5,10 @@
   "description": "Schema for scenario.yaml files used by gurney.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["name", "nodes"],
+  "required": [
+    "name",
+    "nodes"
+  ],
   "properties": {
     "name": {
       "type": "string",
@@ -21,7 +24,10 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["name", "value"],
+        "required": [
+          "name",
+          "value"
+        ],
         "properties": {
           "name": {
             "type": "string"
@@ -46,7 +52,10 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "build"],
+        "required": [
+          "id",
+          "build"
+        ],
         "properties": {
           "id": {
             "type": "string",
@@ -54,7 +63,10 @@
           },
           "build": {
             "type": "string",
-            "enum": ["up", "run"],
+            "enum": [
+              "up",
+              "run"
+            ],
             "description": "Whether this node is part of long-running services ('up') or a one-off ('run')."
           },
           "networks": {
@@ -104,7 +116,10 @@
         "allOf": [
           {
             "not": {
-              "required": ["networks", "span"],
+              "required": [
+                "networks",
+                "span"
+              ],
               "properties": {
                 "networks": {
                   "not": {
@@ -128,7 +143,12 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "node", "run", "retry"],
+        "required": [
+          "id",
+          "node",
+          "run",
+          "retry"
+        ],
         "properties": {
           "id": {
             "type": "string",
@@ -141,7 +161,9 @@
           "run": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["argv"],
+            "required": [
+              "argv"
+            ],
             "properties": {
               "argv": {
                 "type": "array",
@@ -154,7 +176,9 @@
                     {
                       "type": "object",
                       "additionalProperties": false,
-                      "required": ["fact"],
+                      "required": [
+                        "fact"
+                      ],
                       "properties": {
                         "fact": {
                           "type": "string"
@@ -164,7 +188,9 @@
                     {
                       "type": "object",
                       "additionalProperties": false,
-                      "required": ["artifact"],
+                      "required": [
+                        "artifact"
+                      ],
                       "properties": {
                         "artifact": {
                           "type": "string"
@@ -201,4 +227,3 @@
     }
   }
 }
-
