@@ -1,0 +1,240 @@
+# yaml-language-server: $schema=../../../../schemas/scenario.schema.json
+# OBJ-2 Small Clinic with Viper Integration
+# This scenario verifies BlueFlow discovery and registers Blueflow with Viper.
+---
+name: small-clinic-viper
+topology: topologies/blueflow-local/topology.yaml
+
+facts:
+  - name: api_token
+    value: &api_token "testbed-viper-token"
+  - name: assets_url
+    value: http://blueflow:8000/api/assets/
+  - name: upsert_url
+    value: http://blueflow:8000/api/assets/upsert/
+  - name: viper_url
+    value: http://viper:3000
+  - name: blueflow_url
+    value: http://blueflow:8000
+  - name: blueflow_api_env
+    value:
+      RUN_MIGRATIONS: "1"
+      DJANGO_ALLOWED_HOSTS: blueflow,localhost,127.0.0.1
+      DEFAULT_USERNAME: admin
+      DEFAULT_PASSWORD: admin
+      DJANGO_DEBUG: true
+      DJANGO_SETTINGS_MODULE: project.settings.development
+      DATABASE_URL: postgresql://blueflow:testbed@192.168.10.2:5432/blueflow
+      REDIS_URL: redis://192.168.10.3:6379/0
+      CELERY_BROKER_URL: redis://192.168.10.3:6379/0
+      SECRET_KEY: testbed-only-not-for-production
+      CELERY_TASK_ALWAYS_EAGER: "false"
+      BLUEFLOW_BASE_URL: http://blueflow:8000
+      API_TOKEN: *api_token
+  - name: celery_worker_env
+    value:
+      DJANGO_ALLOWED_HOSTS: blueflow,localhost,127.0.0.1
+      DEFAULT_USERNAME: admin
+      DEFAULT_PASSWORD: admin
+      DJANGO_DEBUG: true
+      DJANGO_SETTINGS_MODULE: project.settings.development
+      DATABASE_URL: postgresql://blueflow:testbed@192.168.10.2:5432/blueflow
+      REDIS_URL: redis://192.168.10.3:6379/0
+      CELERY_BROKER_URL: redis://192.168.10.3:6379/0
+      SECRET_KEY: testbed-only-not-for-production
+      CELERY_TASK_ALWAYS_EAGER: "false"
+      BLUEFLOW_BASE_URL: http://blueflow:8000
+      API_TOKEN: *api_token
+  # VIPER_API_KEY from host env (run: docker compose exec viper npm run db:create-test-api-key, then export VIPER_API_KEY=...)
+  - name: replay_env
+    value:
+      VIPER_API_KEY: ${VIPER_API_KEY:-}
+  - name: webhook_api_endpoint
+    value: http://blueflow:8000/api/viper/webhook/
+  - name: webhook_url
+    value: https://webhook.site/49df6c4c-17e0-4cfe-a6a1-2eca9ef5b0c9
+
+nodes:
+  - id: postgres
+    build: up
+    networks: [clinical-vlan]
+
+  - id: redis
+    build: up
+    networks: [clinical-vlan]
+
+  - id: blueflow
+    build: up
+    networks: [clinical-vlan]
+    env_from_fact: blueflow_api_env
+
+  - id: celery-worker
+    build: up
+    networks: [clinical-vlan]
+    env_from_fact: celery_worker_env
+
+  - id: tapirx
+    build: up
+    networks: [clinical-vlan]
+
+  - id: pacs-server
+    build: up
+    networks: [clinical-vlan]
+
+  - id: orthanc-sender
+    build: up
+    span: tapirx
+
+  - id: meddream
+    build: up
+    networks: [clinical-vlan]
+
+  - id: viper-postgres
+    build: up
+    networks: [clinical-vlan]
+
+  - id: viper
+    build: up
+    networks: [clinical-vlan]
+
+  - id: replay
+    build: run
+    span: tapirx
+    env_from_fact: replay_env
+
+commands:
+
+  - id: register-webhook
+    node: replay
+    run:
+      argv:
+        - sh
+        - -lc
+        - |
+          set -eu
+          WEBHOOK_API_ENDPOINT="$1"
+          WEBHOOK_URL="$2"
+          curl -sS -X POST "$WEBHOOK_API_ENDPOINT" \
+            -H "Content-Type: application/json" \
+            -d "{\"last_sync\":\"2020-01-01T00:00:00Z\",\"not_after\":\"2030-01-01T00:00:00Z\",\"page\":1,\"page_size\":10,\"webhook_url\":\"$WEBHOOK_URL\",\"auth_token\":\"\"}"
+        - skip-argv0
+        - { fact: webhook_api_endpoint }
+        - { fact: webhook_url }
+    retry:
+      attempts: 3
+      delay_s: 5
+
+  - id: create-viper-api-key
+    node: viper
+    run:
+      argv: ["npm", "run", "db:create-test-api-key"]
+    retry:
+      attempts: 1
+      delay_s: 0
+    capture:
+      regex: "API_KEY=(\\S+)"
+      as: viper_api_key
+      env_var: VIPER_API_KEY
+
+  - id: register-viper
+    node: replay
+    run:
+      argv:
+        - sh
+        - -lc
+        - |
+          set -eu
+          VIPER_URL="$1"
+          BLUEFLOW_TOKEN="$2"
+          BLUEFLOW_URL="$3"
+          curl -sS -X POST "${VIPER_URL}/api/trpc/integrations.create?batch=1" \
+            -H "Authorization: Bearer $VIPER_API_KEY" \
+            -H "content-type: application/json" \
+            --data-raw "{\"0\":{\"json\":{\"authType\":\"Bearer\",\"authentication\":{\"token\":\"$BLUEFLOW_TOKEN\"},\"name\":\"Blueflow\",\"integrationUri\":\"$BLUEFLOW_URL\",\"isGeneric\":false,\"resourceType\":\"Asset\",\"syncEvery\":300}}}"
+        - skip-argv0
+        - { fact: viper_url }
+        - { fact: api_token }
+        - { fact: blueflow_url }
+    retry:
+      attempts: 3
+      delay_s: 5
+
+  - id: emulate-tap-device
+    node: tapirx
+    run:
+      argv:
+        - sh
+        - -lc
+        - |
+          ip tuntap add dev tap0 mode tap 2>/dev/null || true
+          ip link set tap0 up 2>/dev/null || true
+          ip addr add 172.30.0.2/24 dev tap0 2>/dev/null || true
+          ip -o link show tap0 2>/dev/null || true
+    retry:
+      attempts: 1
+      delay_s: 1
+
+  - id: passive-discovery
+    node: tapirx
+    run:
+      detached: true
+      argv:
+        - tapirx
+        - -iface
+        - eth0
+        - -verbose
+        - -apiurl
+        - { fact: upsert_url }
+        - -limit
+        - "25"
+    retry:
+      attempts: 2
+      delay_s: 1
+
+  - id: orthanc-push-to-dicom-listener
+    node: replay
+    run:
+      argv:
+        - sh
+        - -lc
+        - |
+          set -eu
+          curl -sS -u orthanc:orthanc \
+            -X PUT "http://localhost:8042/modalities/orthanc-listener" \
+            -H "Content-Type: application/json" \
+            -d '{"AET":"ORTHANC","Host":"pacs-server","Port":4242,"AllowEcho":true}'
+          i=0
+          while [ "$i" -lt 3 ]; do
+            curl -sS -u orthanc:orthanc -X POST "http://localhost:8042/modalities/orthanc-listener/echo"
+            i=$((i + 1))
+          done
+    retry:
+      attempts: 2
+      delay_s: 2
+
+  - id: get-assets
+    node: replay
+    run:
+      argv:
+        - curl
+        - { fact: assets_url }
+    retry:
+      attempts: 2
+      delay_s: 2
+    wait_s: 480
+
+  - id: get-remote-assets
+    node: replay
+    run:
+      argv:
+        - sh
+        - -lc
+        - |
+          set -eu
+          VIPER_URL="$1"
+          curl -sS -H "Authorization: Bearer $VIPER_API_KEY" "${VIPER_URL}/api/v1/assets"
+        - skip-argv0
+        - { fact: viper_url }
+    retry:
+      attempts: 2
+      delay_s: 2

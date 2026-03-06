@@ -1,6 +1,7 @@
 """Scenario orchestration: parse, generate compose, up, teardown."""
 
 import logging
+import re
 import shutil
 import time
 from filecmp import cmp
@@ -20,6 +21,7 @@ from gurney.compose import (
 )
 from gurney.models import (
     ArgvArtifactRef,
+    FactDef,
     NodeDef,
     ScenarioConfig,
     TopologyArtifactDef,
@@ -175,6 +177,7 @@ def _run_command_once(
     command_argv: list[str],
     use_exec: bool,
     detached: bool,
+    env_override: dict[str, str] | None = None,
 ) -> tuple[str, str]:
     """Run one command attempt using compose_run or compose_exec."""
     if use_exec:
@@ -190,6 +193,7 @@ def _run_command_once(
         verbose=verbose,
         no_deps=no_deps,
         command=command_argv,
+        env_override=env_override,
     )
 
 
@@ -204,6 +208,7 @@ def _run_command_with_retry(
     command_argv: list[str] | None = None,
     use_exec: bool = False,
     detached: bool = False,
+    env_override: dict[str, str] | None = None,
     event_handler: EventHandler | None = None,
 ) -> tuple[bool, str, str, str | None]:
     """Run a service with retry policy. Returns (success, stdout, stderr, error_msg)."""
@@ -222,6 +227,7 @@ def _run_command_with_retry(
                 command_argv=argv,
                 use_exec=use_exec,
                 detached=detached,
+                env_override=env_override,
             )
             _emit_command_ended(
                 event_handler,
@@ -513,10 +519,16 @@ def _execute_commands(
     build_by_node = {node.id: node.build for node in scenario.nodes}
     artifact_by_id = _artifact_map(topology)
     node_artifacts = {node.id: set(node.artifacts) for node in scenario.nodes}
+    captured_facts: dict[str, str] = {}
+    captured_env: dict[str, str] = {}
     for cmd in scenario.commands:
+        effective_facts = dict(facts)
+        effective_facts.update(
+            {k: FactDef(name=k, value=v) for k, v in captured_facts.items()}
+        )
         resolved = resolve_argv(
             cmd.run.argv,
-            facts,
+            effective_facts,
             artifacts_by_id=artifact_by_id,
             allowed_artifact_ids=node_artifacts.get(cmd.node, set()),
             command_id=cmd.id,
@@ -552,11 +564,30 @@ def _execute_commands(
                 command_argv=resolved,
                 use_exec=use_exec,
                 detached=cmd.run.detached and use_exec,
+                env_override=captured_env if not use_exec else None,
                 event_handler=event_handler,
             )
             command_outputs.append((cmd.id, resolved, out, err))
             if not ok and error_msg:
                 return (command_outputs, RuntimeError(error_msg))
+        if cmd.capture:
+            text = out if cmd.capture.source == "stdout" else err
+            match = re.search(cmd.capture.regex, text)
+            if not match:
+                return (
+                    command_outputs,
+                    RuntimeError(
+                        f"capture regex did not match command output for command {cmd.id!r}"
+                    ),
+                )
+            value = match.group(1).strip()
+            captured_facts[cmd.capture.as_] = value
+            if cmd.capture.env_var:
+                captured_env[cmd.capture.env_var] = value
+        if cmd.wait_s is not None and cmd.wait_s > 0:
+            _emit(event_handler, "wait_started", command_id=cmd.id, wait_s=cmd.wait_s)
+            time.sleep(cmd.wait_s)
+            _emit(event_handler, "wait_completed", command_id=cmd.id, wait_s=cmd.wait_s)
     return (command_outputs, None)
 
 

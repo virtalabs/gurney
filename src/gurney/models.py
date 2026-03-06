@@ -3,7 +3,7 @@
 import ipaddress
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class HealthCheck(BaseModel):
@@ -231,6 +231,17 @@ class CommandRunDef(BaseModel):
     detached: bool = False
 
 
+class CaptureConfig(BaseModel):
+    """Capture command output with regex and store as fact and/or env for later commands."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    regex: str
+    as_: str = Field(alias="as", description="Fact name to store the captured value under.")
+    source: Literal["stdout", "stderr"] = "stdout"
+    env_var: str | None = None
+
+
 class CommandDef(BaseModel):
     """Scenario command: bound to a node with retry policy."""
 
@@ -240,6 +251,14 @@ class CommandDef(BaseModel):
     node: str
     run: CommandRunDef
     retry: RetryConfig
+    wait_s: float | None = None
+    capture: CaptureConfig | None = None
+
+    @model_validator(mode="after")
+    def validate_wait_s(self) -> "CommandDef":
+        if self.wait_s is not None and self.wait_s < 0:
+            raise ValueError("wait_s must be >= 0")
+        return self
 
 
 def _validate_scenario_fact_names_unique(facts: list[FactDef]) -> None:
@@ -369,7 +388,9 @@ class ScenarioConfig(BaseModel):
         _validate_scenario_command_ids_unique(self.commands)
         node_ids = {n.id for n in self.nodes}
         _validate_commands_reference_nodes(self.commands, node_ids)
-        fact_names = {f.name for f in self.facts}
+        fact_names = {f.name for f in self.facts} | {
+            c.capture.as_ for c in self.commands if c.capture
+        }
         _validate_fact_refs_resolve(self.commands, fact_names)
         facts_by_name = {f.name: f for f in self.facts}
         _validate_env_from_fact_resolves_to_map(self.nodes, facts_by_name)

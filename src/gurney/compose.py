@@ -478,6 +478,7 @@ def _build_compose_run_cmd(
     service: str,
     no_deps: bool = False,
     command: list[str] | None = None,
+    env_override: dict[str, str] | None = None,
 ) -> list[str]:
     """Build `docker compose run` command for one-off service execution."""
     run_cmd = [
@@ -491,6 +492,9 @@ def _build_compose_run_cmd(
     ]
     if no_deps:
         run_cmd.append("--no-deps")
+    if env_override:
+        for k, v in env_override.items():
+            run_cmd.extend(["-e", f"{k}={v}"])
     if command:
         run_cmd.extend(["--entrypoint", ""])
     run_cmd.append(service)
@@ -557,15 +561,21 @@ def compose_run(
     verbose: bool = False,
     no_deps: bool = False,
     command: list[str] | None = None,
+    env_override: dict[str, str] | None = None,
     on_line: StreamLineHandler | None = None,
 ) -> tuple[str, str]:
     """Run a service as one-off (docker compose run --rm --quiet-pull).
     Always captures output; returns (stdout, stderr). Optional on_line called per line when set.
     no_deps: add --no-deps so Compose does not start/wait for dependencies (reduces stderr noise for checks).
     command: optional argv to run instead of service default (appended after service name).
+    env_override: optional env vars to pass as -e KEY=value for this run.
     """
     run_cmd = _build_compose_run_cmd(
-        compose_path, service, no_deps=no_deps, command=command
+        compose_path,
+        service,
+        no_deps=no_deps,
+        command=command,
+        env_override=env_override,
     )
     stdout, stderr, returncode = _run_with_optional_stream(run_cmd, on_line)
     if returncode != 0:

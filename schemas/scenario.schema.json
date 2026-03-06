@@ -221,6 +221,37 @@
                 "default": 0.0
               }
             }
+          },
+          "wait_s": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Optional seconds to sleep after this command before proceeding to the next."
+          },
+          "capture": {
+            "type": "object",
+            "description": "Optional capture: parse command output with regex and store as dynamic fact and/or env for subsequent run-node commands.",
+            "additionalProperties": false,
+            "required": ["regex", "as"],
+            "properties": {
+              "regex": {
+                "type": "string",
+                "description": "Regex with exactly one capturing group; applied to stdout or stderr to extract the value."
+              },
+              "as": {
+                "type": "string",
+                "description": "Fact name to store the captured value under."
+              },
+              "source": {
+                "type": "string",
+                "enum": ["stdout", "stderr"],
+                "default": "stdout",
+                "description": "Stream to parse (default stdout)."
+              },
+              "env_var": {
+                "type": "string",
+                "description": "If set, the captured value is also injected as this env var for all subsequent compose run (run-node) commands."
+              }
+            }
           }
         }
       }
