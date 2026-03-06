@@ -8,9 +8,10 @@ from unittest.mock import patch
 import pytest
 import yaml
 
-from testbed.compose import CHECK_IMAGE, generate_compose
-from testbed.models import (
+from gurney.compose import CHECK_IMAGE, generate_compose
+from gurney.models import (
     ArgvFactRef,
+    CaptureConfig,
     CommandDef,
     CommandRunDef,
     FactDef,
@@ -22,7 +23,7 @@ from testbed.models import (
     ScenarioNodeDef,
     TopologyConfig,
 )
-from testbed.runner import (
+from gurney.runner import (
     RunEvent,
     RunResult,
     _filter_topology,
@@ -490,10 +491,10 @@ def test_run_scenario_emits_events_to_handler() -> None:
         pass
 
     with (
-        patch("testbed.runner.compose_up", side_effect=fake_compose_up),
-        patch("testbed.runner.compose_run", side_effect=fake_compose_run),
-        patch("testbed.runner.compose_logs", side_effect=fake_compose_logs),
-        patch("testbed.runner.compose_down", side_effect=fake_compose_down),
+        patch("gurney.runner.compose_up", side_effect=fake_compose_up),
+        patch("gurney.runner.compose_run", side_effect=fake_compose_run),
+        patch("gurney.runner.compose_logs", side_effect=fake_compose_logs),
+        patch("gurney.runner.compose_down", side_effect=fake_compose_down),
     ):
         result = run_scenario(
             scenario_dir,
@@ -517,7 +518,7 @@ def test_run_scenario_emits_events_to_handler() -> None:
 )
 def test_scenario_runs_twice() -> None:
     """Run smoke-minimal twice; both should pass. Requires Docker."""
-    from testbed.runner import run_scenario
+    from gurney.runner import run_scenario
 
     root = Path.cwd()
     scenario_dir = root / "scenarios" / "smoke-minimal"
@@ -601,9 +602,9 @@ def test_run_result_verbose_fields_on_success_with_verbose() -> None:
     def fake_compose_logs(path: Path, services: list[str]):
         return [(svc, f"{svc} logs") for svc in services]
 
-    with patch("testbed.runner.compose_up", side_effect=fake_compose_up), patch(
-        "testbed.runner.compose_run", side_effect=fake_compose_run
-    ), patch("testbed.runner.compose_logs", side_effect=fake_compose_logs):
+    with patch("gurney.runner.compose_up", side_effect=fake_compose_up), patch(
+        "gurney.runner.compose_run", side_effect=fake_compose_run
+    ), patch("gurney.runner.compose_logs", side_effect=fake_compose_logs):
         result = _run_compose_and_capture(
             compose_path,
             "tapirx-dicom-discovery",
@@ -688,9 +689,9 @@ def test_run_result_with_http_check_captures_output() -> None:
             return ("[]\n200", "")
         return (f"{service} stdout", f"{service} stderr")
 
-    with patch("testbed.runner.compose_up", return_value=("", "")), patch(
-        "testbed.runner.compose_run", side_effect=fake_compose_run
-    ), patch("testbed.runner.compose_logs", return_value=[]):
+    with patch("gurney.runner.compose_up", return_value=("", "")), patch(
+        "gurney.runner.compose_run", side_effect=fake_compose_run
+    ), patch("gurney.runner.compose_logs", return_value=[]):
         result = _run_compose_and_capture(
             compose_path,
             "tapirx-dicom-discovery",
@@ -707,6 +708,134 @@ def test_run_result_with_http_check_captures_output() -> None:
     assert result.command_outputs[0][0] == "replay-cmd"
     assert result.command_outputs[1][0] == "verify-assets"
     assert result.command_outputs[1][2] == "[]\n200"
+
+
+def test_run_result_with_wait_s_sleeps_after_command() -> None:
+    """When a command has wait_s, runner sleeps for that duration after the command succeeds."""
+    compose_path = Path("/tmp/compose.yaml")
+    scenario_dir = Path("/tmp/scenario")
+    scenario_dir.mkdir(parents=True, exist_ok=True)
+    (scenario_dir / ".build" / "output").mkdir(parents=True, exist_ok=True)
+    topology = TopologyConfig(
+        networks=[NetworkDef(name="net1", cidr="192.168.10.0/24")],
+        nodes=[
+            NodeDef(
+                name="replay",
+                kind="docker",
+                image="replay:local",
+                network="net1",
+                ip=None,
+            ),
+        ],
+    )
+    scenario = ScenarioConfig(
+        name="wait-test",
+        topology="testbed.yaml",
+        nodes=[ScenarioNodeDef(id="replay", build="run", networks=["net1"])],
+        facts=[],
+        commands=[
+            CommandDef(
+                id="cmd-with-wait",
+                node="replay",
+                run=CommandRunDef(argv=["true"]),
+                retry=RetryConfig(),
+                wait_s=1.5,
+            ),
+        ],
+    )
+
+    with patch("gurney.runner.compose_up", return_value=("", "")), patch(
+        "gurney.runner.compose_run", return_value=("ok", "")
+    ), patch("gurney.runner.compose_logs", return_value=[]), patch(
+        "gurney.runner.time.sleep"
+    ) as mock_sleep:
+        result = _run_compose_and_capture(
+            compose_path,
+            "wait-test",
+            scenario_dir,
+            scenario,
+            topology,
+            verbose=False,
+            project_root=scenario_dir,
+        )
+    assert result.passed
+    mock_sleep.assert_called_once_with(1.5)
+
+
+def test_run_result_with_capture_parses_output_and_injects_env() -> None:
+    """When a command has capture, output is parsed and env_override is passed to subsequent compose_run."""
+    compose_path = Path("/tmp/compose.yaml")
+    scenario_dir = Path("/tmp/scenario")
+    scenario_dir.mkdir(parents=True, exist_ok=True)
+    (scenario_dir / ".build" / "output").mkdir(parents=True, exist_ok=True)
+    topology = TopologyConfig(
+        networks=[NetworkDef(name="net1", cidr="192.168.10.0/24")],
+        nodes=[
+            NodeDef(
+                name="viper",
+                kind="docker",
+                image="viper:local",
+                network="net1",
+                ip="192.168.10.2",
+            ),
+            NodeDef(
+                name="replay",
+                kind="docker",
+                image="replay:local",
+                network="net1",
+                ip=None,
+            ),
+        ],
+    )
+    scenario = ScenarioConfig(
+        name="capture-test",
+        topology="testbed.yaml",
+        nodes=[
+            ScenarioNodeDef(id="viper", build="up", networks=["net1"]),
+            ScenarioNodeDef(id="replay", build="run", networks=["net1"]),
+        ],
+        facts=[],
+        commands=[
+            CommandDef(
+                id="create-key",
+                node="viper",
+                run=CommandRunDef(argv=["echo", "API_KEY=secret-token-123"]),
+                retry=RetryConfig(),
+                capture=CaptureConfig(
+                    regex="API_KEY=(\\S+)",
+                    as_="viper_api_key",
+                    env_var="VIPER_API_KEY",
+                ),
+            ),
+            CommandDef(
+                id="use-key",
+                node="replay",
+                run=CommandRunDef(argv=["sh", "-c", "echo $VIPER_API_KEY"]),
+                retry=RetryConfig(),
+            ),
+        ],
+    )
+
+    exec_out = "API_KEY=secret-token-123"
+    with patch("gurney.runner.compose_up", return_value=("", "")), patch(
+        "gurney.runner.compose_exec", return_value=(exec_out, "")
+    ), patch("gurney.runner.compose_run", return_value=("ok", "")) as mock_run, patch(
+        "gurney.runner.compose_logs", return_value=[]
+    ):
+        result = _run_compose_and_capture(
+            compose_path,
+            "capture-test",
+            scenario_dir,
+            scenario,
+            topology,
+            verbose=False,
+            project_root=scenario_dir,
+        )
+    assert result.passed
+    mock_run.assert_called()
+    calls = [c for c in mock_run.call_args_list if c[1].get("env_override")]
+    assert len(calls) >= 1
+    assert calls[0][1]["env_override"] == {"VIPER_API_KEY": "secret-token-123"}
 
 
 def test_run_result_check_failure_sets_passed_false() -> None:
@@ -765,8 +894,8 @@ def test_run_result_check_failure_sets_passed_false() -> None:
             raise RuntimeError("docker compose run check-0 failed: connection refused")
         return ("", "")
 
-    with patch("testbed.runner.compose_up", return_value=("", "")), patch(
-        "testbed.runner.compose_run", side_effect=fake_compose_run
+    with patch("gurney.runner.compose_up", return_value=("", "")), patch(
+        "gurney.runner.compose_run", side_effect=fake_compose_run
     ):
         result = _run_compose_and_capture(
             compose_path,
@@ -843,8 +972,8 @@ def test_run_result_check_non_2xx_sets_passed_false() -> None:
             return ("Not found\n404", "")
         return ("", "")
 
-    with patch("testbed.runner.compose_up", return_value=("", "")), patch(
-        "testbed.runner.compose_run", side_effect=fake_compose_run
+    with patch("gurney.runner.compose_up", return_value=("", "")), patch(
+        "gurney.runner.compose_run", side_effect=fake_compose_run
     ):
         result = _run_compose_and_capture(
             compose_path,
@@ -885,7 +1014,7 @@ def test_run_result_verbose_fields_none_when_not_verbose() -> None:
             )
         ],
     )
-    with patch("testbed.runner.compose_up", return_value=("", "")):
+    with patch("gurney.runner.compose_up", return_value=("", "")):
         result = _run_compose_and_capture(
             compose_path,
             "minimal",
@@ -925,7 +1054,7 @@ def test_run_result_verbose_fields_none_on_failure() -> None:
             )
         ],
     )
-    with patch("testbed.runner.compose_up", side_effect=RuntimeError("up failed")):
+    with patch("gurney.runner.compose_up", side_effect=RuntimeError("up failed")):
         result = _run_compose_and_capture(
             compose_path,
             "minimal",
@@ -971,8 +1100,8 @@ def test_gather_output_files_in_verbose_result(tmp_path: Path) -> None:
             )
         ],
     )
-    with patch("testbed.runner.compose_up", return_value=("", "")), patch(
-        "testbed.runner.compose_logs", return_value=[("srv", "")]
+    with patch("gurney.runner.compose_up", return_value=("", "")), patch(
+        "gurney.runner.compose_logs", return_value=[("srv", "")]
     ):
         result = _run_compose_and_capture(
             compose_path,
@@ -995,12 +1124,12 @@ def test_gather_output_files_in_verbose_result(tmp_path: Path) -> None:
 
 
 def test_teardown_no_orphans() -> None:
-    """After run, force_cleanup leaves no testbed.managed resources. Requires Docker."""
-    from testbed.compose import force_cleanup
+    """After run, force_cleanup leaves no gurney.managed resources. Requires Docker."""
+    from gurney.compose import force_cleanup
 
     force_cleanup()
     result = subprocess.run(
-        ["docker", "ps", "-aq", "--filter", "label=testbed.managed=true"],
+        ["docker", "ps", "-aq", "--filter", "label=gurney.managed=true"],
         capture_output=True,
         text=True,
     )
@@ -1058,12 +1187,12 @@ def test_run_scenario_stages_fixture_pcap_into_runtime_cache(tmp_path: Path) -> 
 
     compose_path = tmp_path / "compose.yaml"
     compose_path.write_text("services: {}\n", encoding="utf-8")
-    with patch("testbed.runner.generate_compose", return_value=compose_path), patch(
-        "testbed.runner.compose_up", return_value=("", "")
-    ), patch("testbed.runner.compose_run", return_value=("ok", "")), patch(
-        "testbed.runner.compose_logs", return_value=[]
+    with patch("gurney.runner.generate_compose", return_value=compose_path), patch(
+        "gurney.runner.compose_up", return_value=("", "")
+    ), patch("gurney.runner.compose_run", return_value=("ok", "")), patch(
+        "gurney.runner.compose_logs", return_value=[]
     ), patch(
-        "testbed.runner.compose_down", return_value=("", "")
+        "gurney.runner.compose_down", return_value=("", "")
     ):
         result = run_scenario(scenario_dir, project_root=tmp_path)
 
