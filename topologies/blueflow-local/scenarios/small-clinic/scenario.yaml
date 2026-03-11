@@ -148,7 +148,7 @@ commands:
           curl -sS -u orthanc:orthanc \
             -X PUT "http://localhost:8042/modalities/orthanc-listener" \
             -H "Content-Type: application/json" \
-            -d '{"AET":"ORTHANC","Host":"pacs-server","Port":4242,"AllowEcho":true}'
+            -d '{"AET":"CLINIC_PACS","Host":"pacs-server","Port":4242,"AllowEcho":true}'
           i=0
           while [ "$i" -lt 3 ]; do
             curl -sS -u orthanc:orthanc -X POST "http://localhost:8042/modalities/orthanc-listener/echo"

@@ -33,7 +33,7 @@
       "timeout": "3s"
       "retries": !!int "5"
   "blueflow":
-    "image": "virtalabsinc/blueflow:testbed-3.0.3"
+    "image": "virtalabsinc/blueflow:testbed-3.0.5"
     "labels":
       "gurney.managed": "true"
     "networks":
@@ -70,7 +70,7 @@
       "redis":
         "condition": "service_healthy"
   "celery-worker":
-    "image": "virtalabsinc/blueflow:testbed-3.0.3"
+    "image": "virtalabsinc/blueflow:testbed-3.0.5"
     "labels":
       "gurney.managed": "true"
     "networks":
@@ -81,7 +81,6 @@
     - "REDIS_URL=redis://192.168.10.3:6379/0"
     - "DJANGO_SETTINGS_MODULE=project.settings.development"
     - "SECRET_KEY=testbed-only-not-for-production"
-    - "RUN_MIGRATIONS=1"
     - "DJANGO_ALLOWED_HOSTS=blueflow,localhost,127.0.0.1"
     - "DEFAULT_USERNAME=admin"
     - "DEFAULT_PASSWORD=admin"

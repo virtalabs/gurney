@@ -1,0 +1,509 @@
+# yaml-language-server: $schema=../../../../schemas/scenario.schema.json
+# Viper integrationUpload validation probe
+# This scenario posts crafted payloads directly to Viper's /api/v1/assets/integrationUpload
+# endpoint to understand business validation rules.
+---
+name: viper-integration-upload
+topology: topologies/blueflow-local/topology.yaml
+
+facts:
+  - name: viper_url
+    value: http://viper:3000
+  - name: viper_integration_upload_url
+    value: http://viper:3000/api/v1/assets/integrationUpload
+  # VIPER_API_KEY from host env (or generated via create-viper-api-key)
+  - name: viper_api_key
+    value: ${VIPER_API_KEY:-}
+
+nodes:
+  - id: viper-postgres
+    build: up
+    networks: [clinical-vlan]
+
+  - id: viper
+    build: up
+    networks: [clinical-vlan]
+
+  - id: replay
+    build: run
+    span: tapirx
+
+commands:
+  # Optionally generate a test API key if VIPER_API_KEY is not already set.
+  - id: create-viper-api-key
+    node: viper
+    run:
+      argv: ["npm", "run", "db:create-test-api-key"]
+    retry:
+      attempts: 1
+      delay_s: 0
+    capture:
+      regex: "API_KEY=(\\S+)"
+      as: viper_api_key
+      env_var: VIPER_API_KEY
+
+  # Baseline payload: mirrors the Blueflow -> webhook payload we observed.
+  - id: post-baseline-payload
+    node: replay
+    run:
+      argv:
+        - sh
+        - -lc
+        - |
+          set -eu
+          URL="$1"
+          TOKEN="$2"
+          echo "=== baseline ==="
+          curl -sS -w "\nstatus=%{http_code}\n" \
+            -X POST "$URL" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $TOKEN" \
+            -d '{
+              "items": [
+                {
+                  "ip": "192.168.10.6",
+                  "networkSegment": "",
+                  "cpe": "",
+                  "role": "",
+                  "upstreamApi": "http://blueflow:8000/api/assets/1/",
+                  "hostname": "",
+                  "macAddress": "86:c1:70:2a:21:00",
+                  "serialNumber": "",
+                  "location": {},
+                  "status": "Active",
+                  "vendorId": "1"
+                }
+              ],
+              "page": 1,
+              "pageSize": 10,
+              "totalCount": 1,
+              "totalPages": 1,
+              "next": null,
+              "previous": null
+            }'
+        - skip-argv0
+        - { fact: viper_integration_upload_url }
+        - { fact: viper_api_key }
+    retry:
+      attempts: 1
+      delay_s: 0
+    capture:
+      regex: "status=(\\d+)"
+      as: post_baseline_status
+
+  - id: echo-post-baseline-status
+    node: replay
+    run:
+      argv:
+        - sh
+        - -lc
+        - |
+          set -eu
+          STATUS="$1"
+          echo "post-baseline-payload status=${STATUS}"
+        - skip-argv0
+        - { fact: post_baseline_status }
+    retry:
+      attempts: 1
+      delay_s: 0
+
+  # Payload with populated location fields.
+  - id: post-with-location-fields
+    node: replay
+    run:
+      argv:
+        - sh
+        - -lc
+        - |
+          set -eu
+          URL="$1"
+          TOKEN="$2"
+          echo "=== with_location ==="
+          curl -sS -w "\nstatus=%{http_code}\n" \
+            -X POST "$URL" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $TOKEN" \
+            -d '{
+              "items": [
+                {
+                  "ip": "192.168.10.6",
+                  "networkSegment": "",
+                  "cpe": "",
+                  "role": "",
+                  "upstreamApi": "http://blueflow:8000/api/assets/1/",
+                  "hostname": "",
+                  "macAddress": "86:c1:70:2a:21:00",
+                  "serialNumber": "",
+                  "location": {
+                    "facility": "Test Clinic",
+                    "building": "A",
+                    "floor": "1",
+                    "room": "101"
+                  },
+                  "status": "Active",
+                  "vendorId": "1"
+                }
+              ],
+              "page": 1,
+              "pageSize": 10,
+              "totalCount": 1,
+              "totalPages": 1,
+              "next": null,
+              "previous": null
+            }'
+        - skip-argv0
+        - { fact: viper_integration_upload_url }
+        - { fact: viper_api_key }
+    retry:
+      attempts: 1
+      delay_s: 0
+    capture:
+      regex: "status=(\\d+)"
+      as: post_with_location_fields_status
+
+  - id: echo-post-with-location-fields-status
+    node: replay
+    run:
+      argv:
+        - sh
+        - -lc
+        - |
+          set -eu
+          STATUS="$1"
+          echo "post-with-location-fields status=${STATUS}"
+        - skip-argv0
+        - { fact: post_with_location_fields_status }
+    retry:
+      attempts: 1
+      delay_s: 0
+
+  # Payload with non-empty cpe and role.
+  - id: post-with-nonempty-cpe-role
+    node: replay
+    run:
+      argv:
+        - sh
+        - -lc
+        - |
+          set -eu
+          URL="$1"
+          TOKEN="$2"
+          echo "=== with_cpe_role ==="
+          curl -sS -w "\nstatus=%{http_code}\n" \
+            -X POST "$URL" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $TOKEN" \
+            -d '{
+              "items": [
+                {
+                  "ip": "192.168.10.6",
+                  "networkSegment": "",
+                  "cpe": "cpe:2.3:h:vendor:orthanc:1.0:*:*:*:*:*:*:*",
+                  "role": "Imaging Modality",
+                  "upstreamApi": "http://blueflow:8000/api/assets/1/",
+                  "hostname": "",
+                  "macAddress": "86:c1:70:2a:21:00",
+                  "serialNumber": "",
+                  "location": {},
+                  "status": "Active",
+                  "vendorId": "1"
+                }
+              ],
+              "page": 1,
+              "pageSize": 10,
+              "totalCount": 1,
+              "totalPages": 1,
+              "next": null,
+              "previous": null
+            }'
+        - skip-argv0
+        - { fact: viper_integration_upload_url }
+        - { fact: viper_api_key }
+    retry:
+      attempts: 1
+      delay_s: 0
+    capture:
+      regex: "status=(\\d+)"
+      as: post_with_nonempty_cpe_role_status
+
+  - id: echo-post-with-nonempty-cpe-role-status
+    node: replay
+    run:
+      argv:
+        - sh
+        - -lc
+        - |
+          set -eu
+          STATUS="$1"
+          echo "post-with-nonempty-cpe-role status=${STATUS}"
+        - skip-argv0
+        - { fact: post_with_nonempty_cpe_role_status }
+    retry:
+      attempts: 1
+      delay_s: 0
+
+  # Payload with wildcard cpe and empty role.
+  - id: post-with-wildcard-cpe-empty-role
+    node: replay
+    run:
+      argv:
+        - sh
+        - -lc
+        - |
+          set -eu
+          URL="$1"
+          TOKEN="$2"
+          echo "=== wildcard_cpe_empty_role ==="
+          curl -sS -w "\nstatus=%{http_code}\n" \
+            -X POST "$URL" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $TOKEN" \
+            -d '{
+              "items": [
+                {
+                  "ip": "192.168.10.6",
+                  "networkSegment": "",
+                  "cpe": "cpe:2.3:*:*:*:*:*:*:*:*:*:*",
+                  "role": "",
+                  "upstreamApi": "http://blueflow:8000/api/assets/1/",
+                  "hostname": "",
+                  "macAddress": "86:c1:70:2a:21:00",
+                  "serialNumber": "",
+                  "location": {},
+                  "status": "Active",
+                  "vendorId": "1"
+                }
+              ],
+              "page": 1,
+              "pageSize": 10,
+              "totalCount": 1,
+              "totalPages": 1,
+              "next": null,
+              "previous": null
+            }'
+        - skip-argv0
+        - { fact: viper_integration_upload_url }
+        - { fact: viper_api_key }
+    retry:
+      attempts: 1
+      delay_s: 0
+    capture:
+      regex: "status=(\\d+)"
+      as: post_with_wildcard_cpe_empty_role_status
+
+  - id: echo-post-with-wildcard-cpe-empty-role-status
+    node: replay
+    run:
+      argv:
+        - sh
+        - -lc
+        - |
+          set -eu
+          STATUS="$1"
+          echo "post-with-wildcard-cpe-empty-role status=${STATUS}"
+        - skip-argv0
+        - { fact: post_with_wildcard_cpe_empty_role_status }
+    retry:
+      attempts: 1
+      delay_s: 0
+
+  # Payload with pageSize/totalCount/totalPages aligned to example (1).
+  - id: post-with-page-size-1
+    node: replay
+    run:
+      argv:
+        - sh
+        - -lc
+        - |
+          set -eu
+          URL="$1"
+          TOKEN="$2"
+          echo "=== page_size_1 ==="
+          curl -sS -w "\nstatus=%{http_code}\n" \
+            -X POST "$URL" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $TOKEN" \
+            -d '{
+              "items": [
+                {
+                  "ip": "192.168.10.6",
+                  "networkSegment": "",
+                  "cpe": "",
+                  "role": "",
+                  "upstreamApi": "http://blueflow:8000/api/assets/1/",
+                  "hostname": "",
+                  "macAddress": "86:c1:70:2a:21:00",
+                  "serialNumber": "",
+                  "location": {},
+                  "status": "Active",
+                  "vendorId": "1"
+                }
+              ],
+              "page": 1,
+              "pageSize": 1,
+              "totalCount": 1,
+              "totalPages": 1,
+              "next": null,
+              "previous": null
+            }'
+        - skip-argv0
+        - { fact: viper_integration_upload_url }
+        - { fact: viper_api_key }
+    retry:
+      attempts: 1
+      delay_s: 0
+    capture:
+      regex: "status=(\\d+)"
+      as: post_with_page_size_1_status
+
+  - id: echo-post-with-page-size-1-status
+    node: replay
+    run:
+      argv:
+        - sh
+        - -lc
+        - |
+          set -eu
+          STATUS="$1"
+          echo "post-with-page-size-1 status=${STATUS}"
+        - skip-argv0
+        - { fact: post_with_page_size_1_status }
+    retry:
+      attempts: 1
+      delay_s: 0
+
+  # Payload with non-null next/previous (empty strings).
+  - id: post-with-non-null-next-prev
+    node: replay
+    run:
+      argv:
+        - sh
+        - -lc
+        - |
+          set -eu
+          URL="$1"
+          TOKEN="$2"
+          echo "=== next_prev_strings ==="
+          curl -sS -w "\nstatus=%{http_code}\n" \
+            -X POST "$URL" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $TOKEN" \
+            -d '{
+              "items": [
+                {
+                  "ip": "192.168.10.6",
+                  "networkSegment": "",
+                  "cpe": "",
+                  "role": "",
+                  "upstreamApi": "http://blueflow:8000/api/assets/1/",
+                  "hostname": "",
+                  "macAddress": "86:c1:70:2a:21:00",
+                  "serialNumber": "",
+                  "location": {},
+                  "status": "Active",
+                  "vendorId": "1"
+                }
+              ],
+              "page": 1,
+              "pageSize": 10,
+              "totalCount": 1,
+              "totalPages": 1,
+              "next": "",
+              "previous": ""
+            }'
+        - skip-argv0
+        - { fact: viper_integration_upload_url }
+        - { fact: viper_api_key }
+    retry:
+      attempts: 1
+      delay_s: 0
+    capture:
+      regex: "status=(\\d+)"
+      as: post_with_non_null_next_prev_status
+
+  - id: echo-post-with-non-null-next-prev-status
+    node: replay
+    run:
+      argv:
+        - sh
+        - -lc
+        - |
+          set -eu
+          STATUS="$1"
+          echo "post-with-non-null-next-prev status=${STATUS}"
+        - skip-argv0
+        - { fact: post_with_non_null_next_prev_status }
+    retry:
+      attempts: 1
+      delay_s: 0
+
+  # Payload with all fields populated (location, cpe, role, aligned pagination, next/previous strings).
+  - id: post-all-fields-populated
+    node: replay
+    run:
+      argv:
+        - sh
+        - -lc
+        - |
+          set -eu
+          URL="$1"
+          TOKEN="$2"
+          echo "=== all_fields ==="
+          curl -sS -w "\nstatus=%{http_code}\n" \
+            -X POST "$URL" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $TOKEN" \
+            -d '{
+              "items": [
+                {
+                  "ip": "192.168.10.6",
+                  "networkSegment": "192.168.10.0/24",
+                  "cpe": "cpe:2.3:h:vendor:orthanc:1.0:*:*:*:*:*:*:*",
+                  "role": "Imaging Modality",
+                  "upstreamApi": "http://blueflow:8000/api/assets/1/",
+                  "hostname": "ORTHANC",
+                  "macAddress": "86:c1:70:2a:21:00",
+                  "serialNumber": "SN-12345",
+                  "location": {
+                    "facility": "Test Clinic",
+                    "building": "A",
+                    "floor": "1",
+                    "room": "101"
+                  },
+                  "status": "Active",
+                  "vendorId": "1"
+                }
+              ],
+              "page": 1,
+              "pageSize": 1,
+              "totalCount": 1,
+              "totalPages": 1,
+              "next": "",
+              "previous": ""
+            }'
+        - skip-argv0
+        - { fact: viper_integration_upload_url }
+        - { fact: viper_api_key }
+    retry:
+      attempts: 1
+      delay_s: 0
+    capture:
+      regex: "status=(\\d+)"
+      as: post_all_fields_populated_status
+
+  - id: echo-post-all-fields-populated-status
+    node: replay
+    run:
+      argv:
+        - sh
+        - -lc
+        - |
+          set -eu
+          STATUS="$1"
+          echo "post-all-fields-populated status=${STATUS}"
+        - skip-argv0
+        - { fact: post_all_fields_populated_status }
+    retry:
+      attempts: 1
+      delay_s: 0
+

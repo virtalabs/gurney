@@ -33,7 +33,7 @@
       "timeout": "3s"
       "retries": !!int "5"
   "blueflow":
-    "image": "virtalabsinc/blueflow:testbed-3.0.3"
+    "image": "virtalabsinc/blueflow:testbed-3.0.5"
     "labels":
       "gurney.managed": "true"
     "networks":
@@ -54,6 +54,7 @@
     - "CELERY_BROKER_URL=redis://192.168.10.3:6379/0"
     - "CELERY_TASK_ALWAYS_EAGER=false"
     - "BLUEFLOW_BASE_URL=http://blueflow:8000"
+    - "API_TOKEN=testbed-viper-token"
     "healthcheck":
       "test":
       - "CMD"
@@ -70,7 +71,7 @@
       "redis":
         "condition": "service_healthy"
   "celery-worker":
-    "image": "virtalabsinc/blueflow:testbed-3.0.3"
+    "image": "virtalabsinc/blueflow:testbed-3.0.5"
     "labels":
       "gurney.managed": "true"
     "networks":
@@ -81,7 +82,6 @@
     - "REDIS_URL=redis://192.168.10.3:6379/0"
     - "DJANGO_SETTINGS_MODULE=project.settings.development"
     - "SECRET_KEY=testbed-only-not-for-production"
-    - "RUN_MIGRATIONS=1"
     - "DJANGO_ALLOWED_HOSTS=blueflow,localhost,127.0.0.1"
     - "DEFAULT_USERNAME=admin"
     - "DEFAULT_PASSWORD=admin"
@@ -89,6 +89,7 @@
     - "CELERY_BROKER_URL=redis://192.168.10.3:6379/0"
     - "CELERY_TASK_ALWAYS_EAGER=false"
     - "BLUEFLOW_BASE_URL=http://blueflow:8000"
+    - "API_TOKEN=testbed-viper-token"
     "command":
     - "uv"
     - "run"
@@ -125,6 +126,8 @@
     "labels":
       "gurney.managed": "true"
     "network_mode": "service:tapirx"
+    "environment":
+    - "VIPER_API_KEY=${VIPER_API_KEY:-}"
     "depends_on":
       "tapirx":
         "condition": "service_started"
@@ -138,11 +141,17 @@
     "ports":
     - "4242:4242"
     - "8042:8042"
+    "environment":
+    - "ORTHANC__DicomAet=CLINIC_PACS"
+    - "ORTHANC__Name=Small Clinic PACS"
   "orthanc-sender":
     "image": "orthancteam/orthanc:25.12.3"
     "labels":
       "gurney.managed": "true"
     "network_mode": "service:tapirx"
+    "environment":
+    - "ORTHANC__DicomAet=CR_ROOM1"
+    - "ORTHANC__Name=Chest X-Ray Room 1"
     "depends_on":
       "tapirx":
         "condition": "service_started"
@@ -159,6 +168,51 @@
     "command":
     - "sleep"
     - "infinity"
+  "viper-postgres":
+    "image": "postgres:17-alpine"
+    "labels":
+      "gurney.managed": "true"
+    "networks":
+      "clinical-vlan":
+        "ipv4_address": "192.168.10.20"
+    "environment":
+    - "POSTGRES_USER=postgres"
+    - "POSTGRES_PASSWORD=postgres"
+    - "POSTGRES_DB=viper"
+    "healthcheck":
+      "test":
+      - "CMD-SHELL"
+      - "pg_isready -U postgres"
+      "interval": "5s"
+      "timeout": "3s"
+      "retries": !!int "5"
+  "viper":
+    "image": "upgrade/dev-viper:0.1.1"
+    "labels":
+      "gurney.managed": "true"
+    "networks":
+      "clinical-vlan":
+        "ipv4_address": "192.168.10.21"
+    "ports":
+    - "3000:3000"
+    "environment":
+    - "DATABASE_URL=postgres://postgres:postgres@viper-postgres:5432/viper"
+    - "BETTER_AUTH_SECRET=testbed-viper-auth-secret-not-for-production"
+    - "BETTER_AUTH_URL=http://viper:3000"
+    - "NEXT_PUBLIC_APP_URL=http://viper:3000"
+    "healthcheck":
+      "test":
+      - "CMD"
+      - "node"
+      - "-e"
+      - "require('http').get('http://localhost:3000/api/', (r) => process.exit(r.statusCode\
+        \ < 400 ? 0 : 1)).on('error', () => process.exit(1))"
+      "interval": "10s"
+      "timeout": "5s"
+      "retries": !!int "15"
+    "depends_on":
+      "viper-postgres":
+        "condition": "service_healthy"
 "networks":
   "clinical-vlan":
     "driver": "bridge"

@@ -8,6 +8,8 @@ topology: topologies/blueflow-local/topology.yaml
 facts:
   - name: assets_url
     value: http://blueflow:8000/api/assets/
+  - name: capture_proxy_url
+    value: http://replay:8765
   - name: blueflow_api_env
     value:
       DJANGO_ALLOWED_HOSTS: blueflow,localhost,127.0.0.1
@@ -45,17 +47,34 @@ nodes:
       - dicom_echo_sample
 
 commands:
-  - id: verify-assets-url
-    node: blueflow
+  - id: start-capture-proxy
+    node: replay
     run:
+      detached: true
       argv:
-        - http_check
+        - python3
+        - -c
+        - |
+          import http.server, socketserver, urllib.request, sys
+          UPSTREAM = sys.argv[1]
+          PAYLOAD_FILE = "/tmp/tapirx-payload.json"
+          class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+              body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+              open(PAYLOAD_FILE, "wb").write(body)
+              req = urllib.request.Request(UPSTREAM, data=body, method="POST",
+                headers={"Content-Type": "application/json"})
+              r = urllib.request.urlopen(req)
+              self.send_response(r.status)
+              self.send_header("Content-Type", r.headers.get("Content-Type", "application/json"))
+              self.end_headers()
+              self.wfile.write(r.read())
+            def log_message(self, *a): pass
+          with socketserver.TCPServer(("0.0.0.0", 8765), Handler) as s: s.serve_forever()
         - { fact: assets_url }
-        - --expect
-        - "200"
     retry:
-      attempts: 8
-      delay_s: 2
+      attempts: 1
+      delay_s: 0
 
   - id: passive-discovery
     node: tapirx
@@ -66,7 +85,7 @@ commands:
         - -iface
         - eth0
         - -apiurl
-        - { fact: assets_url }
+        - { fact: capture_proxy_url }
         - -limit
         - "25"
     retry:
@@ -84,6 +103,7 @@ commands:
     retry:
       attempts: 2
       delay_s: 2
+    wait_s: 3
 
   - id: get-assets
     node: replay
