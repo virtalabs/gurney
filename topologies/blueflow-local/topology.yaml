@@ -40,7 +40,7 @@ nodes:
 
   - name: blueflow
     kind: docker
-    image: virtalabsinc/blueflow:testbed-3.0.2
+    image: virtalabsinc/blueflow:testbed-3.0.5
     network: clinical-vlan
     ip: 192.168.10.4
     ports: [8000]
@@ -58,7 +58,7 @@ nodes:
 
   - name: celery-worker
     kind: docker
-    image: virtalabsinc/blueflow:testbed-3.0.2
+    image: virtalabsinc/blueflow:testbed-3.0.5
     network: clinical-vlan
     ip: 192.168.10.5
     depends_on: [postgres, redis, blueflow]
@@ -93,6 +93,9 @@ nodes:
     network: clinical-vlan
     ip: 192.168.10.10
     ports: [4242, 8042]
+    environment:
+      ORTHANC__DicomAet: "CLINIC_PACS"
+      ORTHANC__Name: "Small Clinic PACS"
 
   - name: orthanc-sender
     kind: docker
@@ -100,6 +103,9 @@ nodes:
     network: clinical-vlan
     ip: 192.168.10.12
     depends_on: [tapirx]
+    environment:
+      ORTHANC__DicomAet: "CR_ROOM1"
+      ORTHANC__Name: "Chest X-Ray Room 1"
 
   - name: meddream
     kind: docker
@@ -108,3 +114,36 @@ nodes:
     ip: 192.168.10.11
     command: sleep infinity
     ports: [5678, 8080]
+
+  - name: viper-postgres
+    kind: docker
+    image: postgres:17-alpine
+    network: clinical-vlan
+    ip: 192.168.10.20
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: viper
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval_s: 5
+      timeout_s: 3
+      retries: 5
+
+  - name: viper
+    kind: docker
+    image: upgrade/dev-viper:0.1.1
+    network: clinical-vlan
+    ip: 192.168.10.21
+    ports: [3000]
+    depends_on: [viper-postgres]
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@viper-postgres:5432/viper
+      BETTER_AUTH_SECRET: testbed-viper-auth-secret-not-for-production
+      BETTER_AUTH_URL: http://viper:3000
+      NEXT_PUBLIC_APP_URL: http://viper:3000
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/api/', (r) => process.exit(r.statusCode < 400 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval_s: 10
+      timeout_s: 5
+      retries: 15

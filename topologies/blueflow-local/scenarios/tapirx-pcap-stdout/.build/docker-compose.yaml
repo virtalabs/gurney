@@ -33,7 +33,7 @@
       "timeout": "3s"
       "retries": !!int "5"
   "blueflow":
-    "image": "virtalabsinc/blueflow:testbed-3.0.3"
+    "image": "virtalabsinc/blueflow:testbed-3.0.5"
     "labels":
       "gurney.managed": "true"
     "networks":
@@ -46,11 +46,6 @@
     - "REDIS_URL=redis://192.168.10.3:6379/0"
     - "DJANGO_SETTINGS_MODULE=project.settings.development"
     - "SECRET_KEY=testbed-only-not-for-production"
-    - "DJANGO_ALLOWED_HOSTS=blueflow,localhost,127.0.0.1"
-    - "DEFAULT_USERNAME=admin"
-    - "DEFAULT_PASSWORD=admin"
-    - "DJANGO_DEBUG=True"
-    - "CELERY_TASK_ALWAYS_EAGER=true"
     "healthcheck":
       "test":
       - "CMD"
@@ -76,21 +71,13 @@
     "environment":
     - "BLUEFLOW_API_URL=http://192.168.10.4:8000/api"
     - "LISTEN_INTERFACE=eth0"
+    "volumes":
+    - "${PWD}/var/artifacts:/opt/artifacts:ro"
     "depends_on":
       "blueflow":
         "condition": "service_healthy"
     "cap_add":
     - "NET_ADMIN"
-  "replay":
-    "image": "replay:local"
-    "labels":
-      "gurney.managed": "true"
-    "network_mode": "service:tapirx"
-    "volumes":
-    - "${PWD}/var/artifacts:/opt/artifacts:ro"
-    "depends_on":
-      "tapirx":
-        "condition": "service_started"
 "networks":
   "clinical-vlan":
     "driver": "bridge"

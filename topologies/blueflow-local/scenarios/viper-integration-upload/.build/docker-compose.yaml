@@ -46,14 +46,6 @@
     - "REDIS_URL=redis://192.168.10.3:6379/0"
     - "DJANGO_SETTINGS_MODULE=project.settings.development"
     - "SECRET_KEY=testbed-only-not-for-production"
-    - "RUN_MIGRATIONS=1"
-    - "DJANGO_ALLOWED_HOSTS=blueflow,localhost,127.0.0.1"
-    - "DEFAULT_USERNAME=admin"
-    - "DEFAULT_PASSWORD=admin"
-    - "DJANGO_DEBUG=True"
-    - "CELERY_BROKER_URL=redis://192.168.10.3:6379/0"
-    - "CELERY_TASK_ALWAYS_EAGER=false"
-    - "BLUEFLOW_BASE_URL=http://blueflow:8000"
     "healthcheck":
       "test":
       - "CMD"
@@ -68,42 +60,6 @@
       "postgres":
         "condition": "service_healthy"
       "redis":
-        "condition": "service_healthy"
-  "celery-worker":
-    "image": "virtalabsinc/blueflow:testbed-3.0.3"
-    "labels":
-      "gurney.managed": "true"
-    "networks":
-      "clinical-vlan":
-        "ipv4_address": "192.168.10.5"
-    "environment":
-    - "DATABASE_URL=postgresql://blueflow:testbed@192.168.10.2:5432/blueflow"
-    - "REDIS_URL=redis://192.168.10.3:6379/0"
-    - "DJANGO_SETTINGS_MODULE=project.settings.development"
-    - "SECRET_KEY=testbed-only-not-for-production"
-    - "RUN_MIGRATIONS=1"
-    - "DJANGO_ALLOWED_HOSTS=blueflow,localhost,127.0.0.1"
-    - "DEFAULT_USERNAME=admin"
-    - "DEFAULT_PASSWORD=admin"
-    - "DJANGO_DEBUG=True"
-    - "CELERY_BROKER_URL=redis://192.168.10.3:6379/0"
-    - "CELERY_TASK_ALWAYS_EAGER=false"
-    - "BLUEFLOW_BASE_URL=http://blueflow:8000"
-    "command":
-    - "uv"
-    - "run"
-    - "celery"
-    - "-A"
-    - "bf_opencore"
-    - "worker"
-    - "-l"
-    - "info"
-    "depends_on":
-      "postgres":
-        "condition": "service_healthy"
-      "redis":
-        "condition": "service_healthy"
-      "blueflow":
         "condition": "service_healthy"
   "tapirx":
     "image": "tapirx:local"
@@ -128,37 +84,51 @@
     "depends_on":
       "tapirx":
         "condition": "service_started"
-  "pacs-server":
-    "image": "orthancteam/orthanc:25.12.3"
+  "viper-postgres":
+    "image": "postgres:17-alpine"
     "labels":
       "gurney.managed": "true"
     "networks":
       "clinical-vlan":
-        "ipv4_address": "192.168.10.10"
-    "ports":
-    - "4242:4242"
-    - "8042:8042"
-  "orthanc-sender":
-    "image": "orthancteam/orthanc:25.12.3"
+        "ipv4_address": "192.168.10.20"
+    "environment":
+    - "POSTGRES_USER=postgres"
+    - "POSTGRES_PASSWORD=postgres"
+    - "POSTGRES_DB=viper"
+    "healthcheck":
+      "test":
+      - "CMD-SHELL"
+      - "pg_isready -U postgres"
+      "interval": "5s"
+      "timeout": "3s"
+      "retries": !!int "5"
+  "viper":
+    "image": "upgrade/dev-viper:0.1.1"
     "labels":
       "gurney.managed": "true"
-    "network_mode": "service:tapirx"
+    "networks":
+      "clinical-vlan":
+        "ipv4_address": "192.168.10.21"
+    "ports":
+    - "3000:3000"
+    "environment":
+    - "DATABASE_URL=postgres://postgres:postgres@viper-postgres:5432/viper"
+    - "BETTER_AUTH_SECRET=testbed-viper-auth-secret-not-for-production"
+    - "BETTER_AUTH_URL=http://viper:3000"
+    - "NEXT_PUBLIC_APP_URL=http://viper:3000"
+    "healthcheck":
+      "test":
+      - "CMD"
+      - "node"
+      - "-e"
+      - "require('http').get('http://localhost:3000/api/', (r) => process.exit(r.statusCode\
+        \ < 400 ? 0 : 1)).on('error', () => process.exit(1))"
+      "interval": "10s"
+      "timeout": "5s"
+      "retries": !!int "15"
     "depends_on":
-      "tapirx":
-        "condition": "service_started"
-  "meddream":
-    "image": "meddream/conquest-pacs-viewer:latest"
-    "labels":
-      "gurney.managed": "true"
-    "networks":
-      "clinical-vlan":
-        "ipv4_address": "192.168.10.11"
-    "ports":
-    - "5678:5678"
-    - "8080:8080"
-    "command":
-    - "sleep"
-    - "infinity"
+      "viper-postgres":
+        "condition": "service_healthy"
 "networks":
   "clinical-vlan":
     "driver": "bridge"

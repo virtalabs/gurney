@@ -1,8 +1,8 @@
 locked_images:
   - postgres:16.6-alpine
+  - postgres:17-alpine
   - redis:7.4-alpine
   - orthancteam/orthanc:25.12.3
-  - virtalabsinc/blueflow:testbed-3.0.2
 
 local_images:
   - dockerfile: tapirx.Dockerfile
@@ -10,4 +10,6 @@ local_images:
   - dockerfile: replay.Dockerfile
     tag: replay:local
 
-login_required_images: []
+login_required_images:
+  - virtalabsinc/blueflow:testbed-3.0.5
+  - upgrade/dev-viper:0.1.1

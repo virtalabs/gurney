@@ -1,23 +1,15 @@
 # yaml-language-server: $schema=../../../../schemas/scenario.schema.json
-# OBJ-2 Small Clinic with Viper Integration
-# This scenario verifies BlueFlow discovery and registers Blueflow with Viper.
+# OBJ-2 Small Clinic Webhook Verification
+# This scenario mirrors small-clinic-viper but targets webhook.site instead of Viper.
 ---
-name: small-clinic-viper
+name: small-clinic-webhook
 topology: topologies/blueflow-local/topology.yaml
 
 facts:
-  - name: api_token
-    value: &api_token "testbed-viper-token"
   - name: assets_url
     value: http://blueflow:8000/api/assets/
   - name: upsert_url
     value: http://blueflow:8000/api/assets/upsert/
-  - name: assetcustomfieldnames_url
-    value: http://blueflow:8000/api/assetcustomfieldnames/
-  - name: viper_url
-    value: http://viper:3000
-  - name: blueflow_url
-    value: http://blueflow:8000
   - name: blueflow_api_env
     value:
       RUN_MIGRATIONS: "1"
@@ -32,7 +24,6 @@ facts:
       SECRET_KEY: testbed-only-not-for-production
       CELERY_TASK_ALWAYS_EAGER: "false"
       BLUEFLOW_BASE_URL: http://blueflow:8000
-      API_TOKEN: *api_token
   - name: celery_worker_env
     value:
       DJANGO_ALLOWED_HOSTS: blueflow,localhost,127.0.0.1
@@ -46,16 +37,13 @@ facts:
       SECRET_KEY: testbed-only-not-for-production
       CELERY_TASK_ALWAYS_EAGER: "false"
       BLUEFLOW_BASE_URL: http://blueflow:8000
-      API_TOKEN: *api_token
-  # VIPER_API_KEY from host env (run: docker compose exec viper npm run db:create-test-api-key, then export VIPER_API_KEY=...)
-  - name: replay_env
-    value:
-      VIPER_API_KEY: ${VIPER_API_KEY:-}
   - name: webhook_api_endpoint
     value: http://blueflow:8000/api/viper/webhook/
-  # Viper integration upload URL; use IP so Blueflow URLField validator accepts it (rejects hostname "viper")
-  - name: viper_integration_upload_url
-    value: http://192.168.10.21:3000/api/v1/assets/integrationUpload
+  # Example webhook.site URLs; replace GUIDs as needed for local runs.
+  - name: webhook_url
+    value: https://webhook.site/b81c68ff-f2fb-46f0-ad31-5203056cdb81
+  - name: webhook_requests_url
+    value: https://webhook.site/token/b81c68ff-f2fb-46f0-ad31-5203056cdb81/requests
 
 nodes:
   - id: postgres
@@ -92,33 +80,32 @@ nodes:
     build: up
     networks: [clinical-vlan]
 
-  - id: viper-postgres
-    build: up
-    networks: [clinical-vlan]
-
-  - id: viper
-    build: up
-    networks: [clinical-vlan]
-
   - id: replay
     build: run
     span: tapirx
-    env_from_fact: replay_env
 
 commands:
-  # Create Viper API key first (needed for register-viper). Discovery runs before
-  # register-webhook so the first sync push to Viper includes ORTHANC (see docs/small-clinic-vs-viper-flow.md).
-  - id: create-viper-api-key
-    node: viper
+  # Register a webhook pointing at webhook.site so Blueflow's connector
+  # will POST discovered assets there.
+  - id: register-webhook
+    node: replay
     run:
-      argv: ["npm", "run", "db:create-test-api-key"]
+      argv:
+        - sh
+        - -lc
+        - |
+          set -eu
+          WEBHOOK_API_ENDPOINT="$1"
+          WEBHOOK_URL="$2"
+          curl -sS -X POST "$WEBHOOK_API_ENDPOINT" \
+            -H "Content-Type: application/json" \
+            -d "{\"last_sync\":\"2020-01-01T00:00:00Z\",\"not_after\":\"2030-01-01T00:00:00Z\",\"page\":1,\"page_size\":10,\"webhook_url\":\"$WEBHOOK_URL\",\"auth_token\":\"\"}"
+        - skip-argv0
+        - { fact: webhook_api_endpoint }
+        - { fact: webhook_url }
     retry:
-      attempts: 1
-      delay_s: 0
-    capture:
-      regex: "API_KEY=(\\S+)"
-      as: viper_api_key
-      env_var: VIPER_API_KEY
+      attempts: 3
+      delay_s: 5
 
   - id: emulate-tap-device
     node: tapirx
@@ -172,57 +159,6 @@ commands:
     retry:
       attempts: 2
       delay_s: 2
-    wait_s: 25
-
-  - id: register-viper
-    node: replay
-    run:
-      argv:
-        - sh
-        - -lc
-        - |
-          set -eu
-          VIPER_URL="$1"
-          BLUEFLOW_TOKEN="$2"
-          BLUEFLOW_URL="$3"
-          curl -sS -X POST "${VIPER_URL}/api/trpc/integrations.create?batch=1" \
-            -H "Authorization: Bearer $VIPER_API_KEY" \
-            -H "content-type: application/json" \
-            --data-raw "{\"0\":{\"json\":{\"authType\":\"Bearer\",\"authentication\":{\"token\":\"$BLUEFLOW_TOKEN\"},\"name\":\"Blueflow\",\"integrationUri\":\"$BLUEFLOW_URL\",\"isGeneric\":false,\"resourceType\":\"Asset\",\"syncEvery\":300}}}"
-        - skip-argv0
-        - { fact: viper_url }
-        - { fact: api_token }
-        - { fact: blueflow_url }
-    retry:
-      attempts: 3
-      delay_s: 5
-    capture:
-      # Match apiKey.key from register-viper JSON ([\s\S]*? allows newlines in pretty-printed output)
-      regex: "\"apiKey\":\\s*\\{[\\s\\S]*?\"key\":\\s*\"([^\"]+)\""
-      as: viper_integration_key
-      env_var: VIPER_INTEGRATION_KEY
-
-  - id: register-webhook
-    node: replay
-    run:
-      argv:
-        - sh
-        - -lc
-        - |
-          set -eu
-          WEBHOOK_API_ENDPOINT="$1"
-          WEBHOOK_URL="$2"
-          AUTH_TOKEN="$3"
-          curl -sS -X POST "$WEBHOOK_API_ENDPOINT" \
-            -H "Content-Type: application/json" \
-            -d "{\"last_sync\":\"2020-01-01T00:00:00Z\",\"not_after\":\"2030-01-01T00:00:00Z\",\"page\":1,\"page_size\":10,\"webhook_url\":\"$WEBHOOK_URL\",\"auth_token\":\"$AUTH_TOKEN\"}"
-        - skip-argv0
-        - { fact: webhook_api_endpoint }
-        - { fact: viper_integration_upload_url }
-        - { fact: viper_integration_key }
-    retry:
-      attempts: 3
-      delay_s: 5
 
   - id: get-assets
     node: replay
@@ -233,20 +169,14 @@ commands:
     retry:
       attempts: 2
       delay_s: 2
-    wait_s: 45
 
   - id: get-remote-assets
     node: replay
     run:
       argv:
-        - sh
-        - -lc
-        - |
-          set -eu
-          VIPER_URL="$1"
-          curl -sS -H "Authorization: Bearer $VIPER_API_KEY" "${VIPER_URL}/api/v1/assets"
-        - skip-argv0
-        - { fact: viper_url }
+        - curl
+        - { fact: webhook_requests_url }
     retry:
       attempts: 2
       delay_s: 2
+

@@ -1,0 +1,39 @@
+# yaml-language-server: $schema=../../../../schemas/scenario.schema.json
+# Minimal tapirx pcap replay
+---
+name: tapirx-pcap-stdout
+topology: topologies/blueflow-local/topology.yaml
+
+facts: []
+
+nodes:
+  - id: tapirx
+    build: up
+    networks: [clinical-vlan]
+    artifacts:
+      - dicom_echo_sample
+
+commands:
+  - id: list-artifacts
+    node: tapirx
+    run:
+      argv:
+        - ls
+        - -l
+        - /opt/artifacts
+    retry:
+      attempts: 1
+      delay_s: 0
+
+  - id: tapirx-pcap-run
+    node: tapirx
+    run:
+      argv:
+        - tapirx
+        - -pcap
+        - /opt/artifacts/DICOM_C-ECHO-echoscu.pcap
+        - -verbose
+    retry:
+      attempts: 1
+      delay_s: 0
+
