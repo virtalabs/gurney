@@ -8,6 +8,8 @@ facts:
     value: /pcap/DICOM_C-ECHO-echoscu.pcap
   - name: assets_url
     value: http://blueflow:8000/api/assets/
+  - name: upsert_url
+    value: http://blueflow:8000/api/assets/upsert/
   - name: blueflow_api_env
     value:
       DJANGO_ALLOWED_HOSTS: blueflow,localhost,127.0.0.1
@@ -43,6 +45,19 @@ nodes:
     span: tapirx
 
 commands:
+  - id: enable-waffle-switch
+    node: blueflow
+    run:
+      argv:
+        - /app/.venv/bin/python
+        - project/manage.py
+        - shell
+        - -c
+        - "from waffle.models import Switch; Switch.objects.get_or_create(name='core', defaults={'active': True})"
+    retry:
+      attempts: 3
+      delay_s: 2
+
   - id: verify-assets-url
     node: blueflow
     run:
@@ -55,23 +70,6 @@ commands:
       attempts: 8
       delay_s: 2
   
-  - id: passive-discovery
-    node: tapirx
-    run:
-      detached: true
-      # Full command: tapirx plus args (run via exec in tapirx-live container).
-      argv:
-        - tapirx
-        - -iface
-        - eth0
-        - -apiurl 
-        - { fact: assets_url }
-        - -limit
-        - "25"
-    retry:
-      attempts: 2
-      delay_s: 1
-
   - id: replay-dicom-on-wire
     node: replay
     run:

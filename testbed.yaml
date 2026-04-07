@@ -66,9 +66,7 @@ nodes:
     network: clinical-vlan
     ip: 192.168.10.6
     depends_on: [blueflow]
-    environment:
-      BLUEFLOW_API_URL: http://192.168.10.4:8000/api
-      LISTEN_INTERFACE: eth0
+    command: -iface eth0 -apiurl http://blueflow:8000/api/assets/upsert/ -debug
 
   - name: replay
     kind: docker
